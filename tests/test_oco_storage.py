@@ -1,0 +1,55 @@
+import os
+import sqlite3
+import tempfile
+from storage import SQLiteStorage
+
+
+def test_save_and_update_oco(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    storage = SQLiteStorage(db_path, archive_dir)
+
+    order_id = storage.next_order_id()
+    legs = [
+        {"leg_index": 1, "ordertype": "limit", "price": 110.0, "qty": 1.0, "side": "sell"},
+        {"leg_index": 2, "ordertype": "limit", "price": 90.0, "qty": 1.0, "side": "sell"},
+    ]
+
+    storage.save_oco_order(
+        order_id=order_id,
+        chat_id=123,
+        symbol="BTCUSDT",
+        side="sell",
+        legs=legs,
+        hook_symbol=None,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        status="active",
+    )
+
+    # Verify parent
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT order_id, symbol, side FROM order_oco WHERE order_id = ?", (order_id,))
+    row = cur.fetchone()
+    assert row is not None and row[0] == order_id and row[1] == "BTCUSDT"
+
+    # Verify legs
+    cur.execute("SELECT leg_index, ordertype, price, qty, side FROM order_oco_leg WHERE order_id = ? ORDER BY leg_index", (order_id,))
+    legs_rows = cur.fetchall()
+    assert len(legs_rows) == 2
+    assert legs_rows[0][0] == 1 and legs_rows[0][1] == "limit"
+
+    # Update core id and status
+    storage.update_oco_leg_core_order_id(order_id, 1, -101)
+    storage.update_oco_leg_status(order_id, 1, "filled")
+
+    cur.execute("SELECT core_order_id, status FROM order_oco_leg WHERE order_id = ? AND leg_index = 1", (order_id,))
+    r = cur.fetchone()
+    assert r[0] == -101 and r[1] == "filled"
+
+    conn.close()
+    storage.close()

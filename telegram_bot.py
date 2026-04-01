@@ -1074,6 +1074,10 @@ class TelegramTradingBot:
                     status="active",
                 )
                 oco_spec = OcoSpec(order_id=order_id, symbol=draft["symbol"], side=draft["side"], legs=legs, chat_id=chat_id, tf_minutes=tf)
+                # keep in-memory record for UI and lifecycle operations
+                if not hasattr(self, "_oco_orders"):
+                    self._oco_orders = []
+                self._oco_orders.append(oco_spec)
                 self._attach_oco_to_engine(oco_spec)
                 self._storage.append_event("oco_created", order_id, draft)
                 await self._send(update, f"OCO {order_id} creato e attivato.")
@@ -1460,6 +1464,23 @@ class TelegramTradingBot:
         lines.append("TRAILING BUY:")
         for t in self._trailing_buy_orders:
             lines.append(f"{t.order_id} {t.symbol} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={t.next_eval_at} status={t.status}")
+        # OCO orders
+        lines.append("OCO:")
+        for o in getattr(self, "_oco_orders", []):
+            try:
+                legs_text = []
+                for l in o.legs:
+                    parts = [f"leg{l.get('leg_index')}", l.get('ordertype')]
+                    if l.get('price') is not None:
+                        parts.append(f"price={l.get('price')}")
+                    if l.get('stop_price') is not None:
+                        parts.append(f"stop={l.get('stop_price')}")
+                    parts.append(f"qty={l.get('qty')}")
+                    legs_text.append("(" + ", ".join(parts) + ")")
+                legs_joined = " ".join(legs_text)
+                lines.append(f"{o.order_id} watch={o.symbol} side={o.side} legs={legs_joined} tf={o.tf_minutes}m next={o.next_eval_at} status={o.status}")
+            except Exception:
+                lines.append(str(o))
         lines.append(f"Timeframe={self._timeframe_seconds}s echo={self._echo_enabled} alert={self._alert_enabled}")
         await self._send(update, "\n".join(lines))
 
@@ -1471,6 +1492,7 @@ class TelegramTradingBot:
         if target == "a":
             ids = [s.order_id for s in self._sell_orders + self._buy_orders]
             ids += [s.order_id for s in self._function_orders + self._trailing_sell_orders + self._trailing_buy_orders]
+            ids += [s.order_id for s in getattr(self, "_oco_orders", [])]
             for oid in ids:
                 self._cancel_order_by_id(oid)
             await self._send(update, "Tutti gli ordini cancellati")
@@ -1498,6 +1520,26 @@ class TelegramTradingBot:
                     self._storage.update_order_status(order_id, "cancelled")
                     self._storage.append_event("order_cancelled", order_id)
                     return
+
+        # OCO orders
+        for spec in getattr(self, "_oco_orders", []):
+            if spec.order_id == order_id and spec.status == "active":
+                spec.status = "cancelled"
+                # cancel engine core orders for legs
+                for leg in spec.legs:
+                    core_id = leg.get("core_order_id")
+                    if core_id:
+                        try:
+                            self._manager.cancel_order(int(core_id))
+                        except Exception:
+                            pass
+                    try:
+                        self._storage.update_oco_leg_status(order_id, leg.get("leg_index"), "cancelled")
+                    except Exception:
+                        pass
+                self._storage.update_order_status(order_id, "cancelled")
+                self._storage.append_event("oco_cancelled", order_id)
+                return
 
         raise ValueError("order_id non trovato")
 
