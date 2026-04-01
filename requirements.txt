@@ -3,7 +3,17 @@ python-dotenv>=1.1.1
 python-telegram-bot[job-queue]>=21.7
 
 # Data / utilities commonly used by spunto.py and other modules
-pandas
-numpy
-ccxt
-requests
+pandas>=2.0.0
+numpy>=1.25.0
+requests>=2.31.0
+
+# Networking / async runtime required by some libs
+aiohttp>=3.8.4
+
+# Optional / helpers (used in example feeds or utilities)
+yfinance>=0.2.24
+typing-extensions>=4.5.0
+
+# Notes:
+# - install with: pip install -r requirements.txt
+# - python-telegram-bot will pull additional async deps (aiohttp, tornado, etc.)

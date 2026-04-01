@@ -637,7 +637,7 @@ class TelegramTradingBot:
             if len(parts) < 3:
                 raise ValueError("Se abiliti alert devi passare PERCENT")
             self._alert_percent = float(parts[2])
-            self._alert_reference_price = self._feed.get_price("BTCUSDT")
+            self._alert_reference_price = self._feed.get_price("BTCUSDT", self._default_tf_minutes)
             self._poller.add_symbol("BTCUSDT")
         else:
             self._alert_reference_price = None
@@ -717,7 +717,7 @@ class TelegramTradingBot:
         raise ValueError("order_id non trovato")
 
     def _init_trailing_sell(self, spec: TrailingSellSpec):
-        price = self._feed.get_price(spec.symbol)
+            price = self._feed.get_price(spec.symbol, spec.tf_minutes)
         spec.max_price = price
         if spec.limit is None:
             spec.armed = True
@@ -726,7 +726,7 @@ class TelegramTradingBot:
             spec.arm_op = "<" if price >= spec.limit else ">"
 
     def _init_trailing_buy(self, spec: TrailingBuySpec):
-        price = self._feed.get_price(spec.symbol)
+            price = self._feed.get_price(spec.symbol, spec.tf_minutes)
         spec.min_price = price
         spec.arm_op = "<" if price >= spec.limit else ">"
 
@@ -748,7 +748,7 @@ class TelegramTradingBot:
             if not self._is_due(spec, now_ts):
                 continue
 
-            price = self._feed.get_price(spec.symbol)
+            price = self._feed.get_price(spec.symbol, spec.tf_minutes)
             self._mark_evaluated(spec, now_ts)
             if spec.prev_price is None:
                 spec.prev_price = price
@@ -811,7 +811,7 @@ class TelegramTradingBot:
                 continue
             if not self._is_due(spec, now_ts):
                 continue
-            price = self._feed.get_price(spec.symbol)
+            price = self._feed.get_price(spec.symbol, spec.tf_minutes)
             self._mark_evaluated(spec, now_ts)
 
             if not spec.armed and spec.limit is not None:
@@ -842,7 +842,7 @@ class TelegramTradingBot:
                 continue
             if not self._is_due(spec, now_ts):
                 continue
-            price = self._feed.get_price(spec.symbol)
+            price = self._feed.get_price(spec.symbol, spec.tf_minutes)
             self._mark_evaluated(spec, now_ts)
 
             if not spec.armed:
@@ -869,7 +869,7 @@ class TelegramTradingBot:
         if not self._alert_enabled or now - self._last_alert_tick < 60:
             return
         self._last_alert_tick = now
-        price = self._feed.get_price("BTCUSDT")
+        price = self._feed.get_price("BTCUSDT", self._default_tf_minutes)
         if self._alert_reference_price is None:
             self._alert_reference_price = price
             return
@@ -898,7 +898,7 @@ class TelegramTradingBot:
         lines = []
         for symbol in self._tracked_symbols():
             try:
-                lines.append(f"{symbol}: {self._feed.get_price(symbol)}")
+                lines.append(f"{symbol}: {self._feed.get_price(symbol, self._default_tf_minutes)}")
             except Exception as exc:
                 lines.append(f"{symbol}: errore {exc}")
         self._queue_message(chat_id, "Echo prezzi:\n" + "\n".join(lines))

@@ -34,7 +34,10 @@ class OrderBehavior(Enum):
 
 class PriceFeed(ABC):
     @abstractmethod
-    def get_price(self, symbol: str) -> float:
+    def get_price(self, symbol: str, tf_minutes: int = 1) -> float:
+        """Return the close price for `symbol` for the timeframe `tf_minutes`.
+        tf_minutes: one of 1,5,15,30,60,120,240,1440 (minutes). Default 1.
+        """
         pass
 
 
@@ -178,6 +181,11 @@ class OrderManager:
         log.info(f"Ordine {order.id} '{order.action.description}' aggiunto [{order.symbol}]")
         return order.id
 
+    def get_tf_set_for_symbol(self, symbol: str) -> set:
+        """Return set of tf_minutes for active orders for a given symbol."""
+        with self._lock:
+            return {o.tf_minutes for o in self._orders.values() if o.symbol == symbol and o.status == OrderStatus.ACTIVE}
+
     def remove_order(self, order_id: int):
         with self._lock:
             self._orders.pop(order_id, None)
@@ -212,9 +220,18 @@ class OrderManager:
 
     # -- valutazione trigger --
 
-    def process_price(self, symbol: str, price: float):
-        for order in self._event_bus.get_active(symbol):
-            self._evaluate_order(order, price)
+    def process_price(self, symbol: str, price: float, tf_minutes: Optional[int] = None):
+        """Process a price sample for `symbol` and optionally for a specific timeframe.
+        If tf_minutes is provided only orders with matching tf_minutes will be evaluated.
+        """
+        if tf_minutes is None:
+            for order in self._event_bus.get_active(symbol):
+                self._evaluate_order(order, price)
+        else:
+            # evaluate only orders matching this timeframe
+            for order in self._event_bus.get_active(symbol):
+                if order.tf_minutes == tf_minutes:
+                    self._evaluate_order(order, price)
 
     def _evaluate_order(self, order: Order, price: float):
         fired_trigger = None
@@ -284,10 +301,17 @@ class PricePoller:
                 symbols_snapshot = list(self._symbols)
             for symbol in symbols_snapshot:
                 try:
-                    price = self._feed.get_price(symbol)
-                    self._om.process_price(symbol, price)
+                    tf_set = self._om.get_tf_set_for_symbol(symbol)
+                    if not tf_set:
+                        continue
+                    for tf in sorted(tf_set):
+                        try:
+                            price = self._feed.get_price(symbol, tf)
+                            self._om.process_price(symbol, price, tf_minutes=tf)
+                        except Exception as exc_inner:
+                            log.error(f"Errore price feed {symbol} tf={tf}: {exc_inner}")
                 except Exception as e:
-                    log.error(f"Errore price feed {symbol}: {e}")
+                    log.error(f"Errore price feed loop {symbol}: {e}")
             time.sleep(POLLING_INTERVAL)
 
 
