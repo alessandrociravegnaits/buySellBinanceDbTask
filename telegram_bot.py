@@ -300,7 +300,7 @@ class TelegramTradingBot:
     def _main_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton("Nuovo ordine"), KeyboardButton("Ordini attivi")],
-            [KeyboardButton("Impostazioni"), KeyboardButton("Help")],
+            [KeyboardButton("Impostazioni"), KeyboardButton("Info")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -596,7 +596,21 @@ class TelegramTradingBot:
             "/o - lista ordini con order_id\n"
             "/c ORDER_ID | /c a - cancella"
         )
-        await self._send(update, text, reply_markup=self._main_menu_keyboard())
+
+        # Runtime settings summary (current values)
+        oco_count = len(getattr(self, "_oco_orders", [])) if hasattr(self, "_oco_orders") else 0
+        status_lines = [
+            "\n\nValori correnti:\n",
+            f"- Default TF (minuti): {self._default_tf_minutes}",
+            f"- Timeframe seconds: {self._timeframe_seconds}",
+            f"- Echo abilitato: {self._echo_enabled}",
+            f"- Alert abilitato: {self._alert_enabled}",
+            f"- Alert percent: {self._alert_percent}",
+            f"- Alert reference price: {self._alert_reference_price}",
+            f"- Ordini attivi: sell={len(self._sell_orders)} buy={len(self._buy_orders)} function={len(self._function_orders)} trailing_sell={len(self._trailing_sell_orders)} trailing_buy={len(self._trailing_buy_orders)} oco={oco_count}",
+        ]
+
+        await self._send(update, text + "\n".join(status_lines), reply_markup=self._main_menu_keyboard())
 
     async def _on_menu_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.effective_message:
@@ -619,6 +633,10 @@ class TelegramTradingBot:
 
         if lowered in {"menu", "help"}:
             await self._show_main_menu(update)
+            return
+        if lowered == "info":
+            await self._info(update, context)
+            return
             return
 
         if lowered == "nuovo ordine":

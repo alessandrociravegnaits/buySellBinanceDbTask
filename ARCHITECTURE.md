@@ -146,6 +146,43 @@ CREATE TABLE events (
 - Indici: creare indici su status, next_eval_at, tf_minutes per ricerche veloci.
 - Archiviazione mensile: `archive_closed_orders_by_month()` può esportare le righe `WHERE status!='active'` in file CSV/JSON separati per mese e poi cancellare/archiviare i record o mantenerli in table archive.
 
+7.1) OCO Orders (nuova feature)
+
+- Schema aggiuntivo introdotto:
+
+CREATE TABLE IF NOT EXISTS order_oco (
+    order_id INTEGER PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    hook_symbol TEXT,
+    FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS order_oco_leg (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    leg_index INTEGER NOT NULL,
+    ordertype TEXT NOT NULL, -- limit|stop_limit|market
+    price REAL, -- for limit
+    stop_price REAL, -- for stop_limit
+    limit_price REAL, -- for stop_limit's limit
+    qty REAL NOT NULL,
+    side TEXT NOT NULL,
+    core_order_id INTEGER, -- core engine order id mapping
+    status TEXT NOT NULL DEFAULT 'waiting',
+    FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
+);
+
+- Comportamento motore:
+  - Per ogni leg OCO l'app crea un "core order" nel motore (Order in `core.py`) con un id interno (implementazione corrente usa id negativi per evitare collisioni con `order_id`).
+  - Quando una leg viene eseguita (filled), l'handler marca la leg come `filled`, marca l'OCO come `filled` e annulla (cancel) le leg rimanenti nel motore in modo atomico (cancel-sibling). Gli aggiornamenti per leg/core id e status sono esposti tramite metodi `save_oco_order`, `update_oco_leg_core_order_id`, `update_oco_leg_status` in `storage.py`.
+  - L'evento di esecuzione (`oco_leg_filled` / `oco_leg_cancelled`) è scritto su `event_log` per audit.
+
+- Note operative:
+  - `SQLiteStorage.__init__` esegue `_init_schema` e quindi usa `CREATE TABLE IF NOT EXISTS` — al prossimo avvio dell'app le nuove tabelle OCO verranno create automaticamente se mancanti. Non è necessario cancellare manualmente il DB per farle comparire.
+  - La persistenza e la mappatura core_id ↔ leg sono mantenute in `order_oco_leg.core_order_id`.
+
+
 8) Persistenza e DB auto-creazione
 - Se il DB non esiste, `SQLiteStorage` dovrebbe creare il file e inizializzare le tabelle. Inserire la logica all'interno del costruttore di `SQLiteStorage` per creare `data/` se mancante e creare `bot.sqlite3` con gli schema sopra.
 - La app deve controllare `if not os.path.exists(db_path): create_db_and_schema()` all'avvio.
@@ -187,6 +224,18 @@ python main.py
 - Verificare/integrare feed prezzi per restituire i close price all'ultimo candle chiuso coerente con UTC.
 - Allineare /S e /B alla logica di `spunto.py` (eseguire test di regressione su dati storici).
 - Aggiungere `.env` a .gitignore e documentare dove mettere le chiavi.
+
+13) Aggiornamenti recenti (sintesi)
+
+- `Info` UI: il bottone del menu principale è stato rinominato in `Info` (prima era `Help`) e ora la vista mostra due sezioni: una guida sintetica ai comandi e una sezione "Valori correnti" che riporta i runtime settings attuali del bot (default TF, timeframe seconds, echo, alert, alert percent/reference price e conteggio ordini attivi per tipo inclusi OCO). Questo permette di vedere le impostazioni reali in uso senza aprire il codice.
+
+- OCO (One-Cancels-the-Other): implementate le tabelle `order_oco` e `order_oco_leg` in storage; aggiunti i metodi `save_oco_order`, `update_oco_leg_core_order_id`, `update_oco_leg_status`. L'app crea core orders per ciascuna leg (mappati in `order_oco_leg.core_order_id`) e sul fill di una leg esegue il comportamento cancel-sibling (marca leg come `filled`, marca OCO come `filled` e cancella le leg rimanenti nel motore). Eventi `oco_leg_filled` e `oco_leg_cancelled` vengono scritti in `event_log`.
+
+- Migrazione/creazione schema: `SQLiteStorage.__init__` esegue `_init_schema` e `CREATE TABLE IF NOT EXISTS` per tutte le tabelle; le nuove tabelle OCO verranno create automaticamente al prossimo avvio dell'app se mancanti. Non è necessario cancellare manualmente il DB per applicare queste modifiche.
+
+- Archiviazione: la routine `archive_closed_orders_by_month()` sposta ordini con `status != 'active'` e `updated_at` appartenenti a mesi precedenti in file `data/archive/archive_YYYY_MM.sqlite3`. Un ordine cancellato verrà quindi archiviato solo dopo che il mese è passato rispetto a `updated_at`.
+
+- Nota operativa: il comando Telegram `/c a` (cancella tutti) attualmente itera le collezioni in memoria (`_sell_orders`, `_buy_orders`, `_function_orders`, `_trailing_sell_orders`, `_trailing_buy_orders`) e invoca la cancellazione — attualmente non include esplicitamente la collezione `_oco_orders`. Se desideri che `/c a` annulli anche OCO, posso aggiornarlo.
 
 Se vuoi, procedo subito a:
 - implementare lo schema SQL in `storage.py` e fare la creazione automatica del DB,
