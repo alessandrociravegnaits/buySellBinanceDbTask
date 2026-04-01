@@ -34,6 +34,76 @@ $env:BINANCE_SECRET_KEY="your_secret_key"
 python main.py
 ```
 
+## Guida rapida per neofiti (Windows)
+
+1) Creare e attivare un ambiente virtuale
+
+```powershell
+python -m venv .venv
+. .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+2) Creare un file `.env` nella root del progetto con le variabili seguenti (non committare `.env`):
+
+```
+BOT_TOKEN=your_telegram_bot_token
+BINANCE_API_KEY=your_binance_api_key
+BINANCE_SECRET_KEY=your_binance_secret_key
+# opzionali
+AUTHORIZED_CHAT_ID=123456789
+BOT_DB_PATH=data/bot.sqlite3
+```
+
+3) Avviare l'app (consigliato tramite `main.py`):
+
+```powershell
+python main.py
+```
+
+Oppure per avviare solo il bot (sviluppo):
+
+```powershell
+python telegram_bot.py
+```
+
+4) Ottenere il proprio `AUTHORIZED_CHAT_ID` (opzionale):
+- usa un bot come `@userinfobot` o manda `/start` al tuo bot e leggi l'id dai log del processo.
+
+## Spiegazione del database
+
+- File principale: `data/bot.sqlite3` (creato automaticamente all'avvio se mancante).
+- Archivio mensile: `data/archive/archive_YYYY_MM.sqlite3` (la routine di archiviazione copia qui gli ordini chiusi di mesi passati).
+- Se vuoi ricreare lo schema senza cancellare l'applicazione, puoi lanciare (con venv attivo):
+
+```powershell
+python -c "from storage import SQLiteStorage; SQLiteStorage('data/bot.sqlite3','data/archive')"
+```
+
+- Per cancellare completamente il DB e ricominciare (opzionale):
+
+```powershell
+Remove-Item -Path .\data\bot.sqlite3
+```
+
+- L'app usa `CREATE TABLE IF NOT EXISTS` quindi aggiunte future allo schema verranno applicate automaticamente al prossimo avvio.
+
+## Uso delle chiavi API
+
+- Telegram `BOT_TOKEN`: necessario per collegare il bot Telegram. Metti il token in `.env` come `BOT_TOKEN` o esportalo nell'ambiente. Non condividerlo.
+- Binance `BINANCE_API_KEY` / `BINANCE_SECRET_KEY`: usate dal `Binance1mClosePriceFeed` per leggere le candlestick (e opzionalmente per eseguire ordini se aggiungi quella funzionalità). Metti le chiavi in `.env` o nelle variabili d'ambiente.
+
+Buone pratiche:
+- Non committare `.env` o i file `*.sqlite3` in Git.
+- Per deployment usa secret manager o variabili d'ambiente del sistema.
+
+## Note finali e dove guardare
+- Interfaccia: `telegram_bot.py` (menu, wizard ordini, OCO, Info runtime).
+- Motore: `core.py` (gestione ordini e poller).
+- Storage: `storage.py` (persistence, archive, schema).
+
+Se hai bisogno, posso aggiungere una sezione con esempi passo-passo per creare il primo ordine OCO via UI Telegram.
+
 ## Interfaccia Telegram
 
 File principale: `telegram_bot.py` (launcher: `main.py`).
