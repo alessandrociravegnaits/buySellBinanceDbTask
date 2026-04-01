@@ -1,0 +1,29 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtualenv / build
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# Environment files (secrets)
+.env
+.env.*
+
+# SQLite storage and archives
+data/
+*.sqlite3
+data/archive/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+

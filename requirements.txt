@@ -1,0 +1,9 @@
+python-binance>=1.0.29
+python-dotenv>=1.1.1
+python-telegram-bot[job-queue]>=21.7
+
+# Data / utilities commonly used by spunto.py and other modules
+pandas
+numpy
+ccxt
+requests
