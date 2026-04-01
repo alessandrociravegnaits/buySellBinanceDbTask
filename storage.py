@@ -94,6 +94,29 @@ class SQLiteStorage:
                 FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS order_oco (
+                order_id INTEGER PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                hook_symbol TEXT,
+                FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS order_oco_leg (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
+                leg_index INTEGER NOT NULL,
+                ordertype TEXT NOT NULL,
+                price REAL,
+                stop_price REAL,
+                limit_price REAL,
+                qty REAL NOT NULL,
+                side TEXT NOT NULL,
+                core_order_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'waiting',
+                FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS event_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 order_id INTEGER,
@@ -263,6 +286,76 @@ class SQLiteStorage:
             )
             self._conn.commit()
 
+    def save_oco_order(
+        self,
+        order_id: int,
+        chat_id: int,
+        symbol: str,
+        side: str,
+        legs: List[Dict[str, Any]],
+        hook_symbol: Optional[str],
+        tf_minutes: int,
+        next_eval_at: Optional[int],
+        last_eval_at: Optional[int],
+        status: str = "active",
+    ):
+        """Persist an OCO order with its legs.
+
+        `legs` is a list of dicts with keys: leg_index, ordertype, price?, stop_price?, limit_price?, qty, side
+        """
+        now = self._now_iso()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO orders(order_id, chat_id, kind, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
+                (order_id, chat_id, "oco", status, now, now),
+            )
+            self._conn.execute(
+                "UPDATE orders SET tf_minutes = ?, next_eval_at = ?, last_eval_at = ? WHERE order_id = ?",
+                (tf_minutes, next_eval_at, last_eval_at, order_id),
+            )
+            self._conn.execute(
+                "INSERT INTO order_oco(order_id, symbol, side, hook_symbol) VALUES(?, ?, ?, ?)",
+                (order_id, symbol, side, hook_symbol),
+            )
+            for leg in legs:
+                self._conn.execute(
+                    """
+                    INSERT INTO order_oco_leg(order_id, leg_index, ordertype, price, stop_price, limit_price, qty, side, core_order_id, status)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        order_id,
+                        leg.get("leg_index"),
+                        leg.get("ordertype"),
+                        leg.get("price"),
+                        leg.get("stop_price"),
+                        leg.get("limit_price"),
+                        leg.get("qty"),
+                        leg.get("side"),
+                        leg.get("core_order_id"),
+                        leg.get("status", "waiting"),
+                    ),
+                )
+            self._conn.commit()
+
+    def update_oco_leg_core_order_id(self, order_id: int, leg_index: int, core_order_id: int):
+        with self._lock:
+            self._conn.execute(
+                "UPDATE order_oco_leg SET core_order_id = ? WHERE order_id = ? AND leg_index = ?",
+                (core_order_id, order_id, leg_index),
+            )
+            self._conn.execute("UPDATE orders SET updated_at = ? WHERE order_id = ?", (self._now_iso(), order_id))
+            self._conn.commit()
+
+    def update_oco_leg_status(self, order_id: int, leg_index: int, status: str):
+        with self._lock:
+            self._conn.execute(
+                "UPDATE order_oco_leg SET status = ? WHERE order_id = ? AND leg_index = ?",
+                (status, order_id, leg_index),
+            )
+            self._conn.execute("UPDATE orders SET updated_at = ? WHERE order_id = ?", (self._now_iso(), order_id))
+            self._conn.commit()
+
     def update_simple_core_order_id(self, order_id: int, core_order_id: int):
         with self._lock:
             self._conn.execute("UPDATE order_simple SET core_order_id = ? WHERE order_id = ?", (core_order_id, order_id))
@@ -351,10 +444,35 @@ class SQLiteStorage:
                 """
             ).fetchall()
 
+            # OCO orders: parent + legs
+            oco_parents = self._conn.execute(
+                """
+                SELECT o.order_id, o.chat_id, o.status, oc.symbol, oc.side
+                     , o.tf_minutes, o.next_eval_at, o.last_eval_at
+                FROM orders o
+                JOIN order_oco oc ON oc.order_id = o.order_id
+                WHERE o.status = 'active'
+                ORDER BY o.order_id
+                """
+            ).fetchall()
+
+            oco = []
+            for p in oco_parents:
+                oid = p["order_id"]
+                legs = self._conn.execute(
+                    "SELECT leg_index, ordertype, price, stop_price, limit_price, qty, side, core_order_id, status FROM order_oco_leg WHERE order_id = ? ORDER BY leg_index",
+                    (oid,),
+                ).fetchall()
+                oco.append({
+                    **dict(p),
+                    "legs": [dict(l) for l in legs],
+                })
+
         return cast(Dict[str, List[Dict[str, Any]]], {
             "simple": [dict(r) for r in simple],
             "function": [dict(r) for r in function],
             "trailing": [dict(r) for r in trailing],
+            "oco": oco,
         })
 
     def archive_closed_orders_by_month(self):
@@ -417,6 +535,32 @@ class SQLiteStorage:
                         archive_conn.execute(
                             f"INSERT OR IGNORE INTO {table_name}({col_list}) VALUES({placeholders})",
                             tuple(child[c] for c in cols),
+                        )
+
+                # handle OCO parent record
+                for table_name in ("order_oco",):
+                    for oid in order_ids:
+                        child = self._conn.execute(f"SELECT * FROM {table_name} WHERE order_id = ?", (oid,)).fetchone()
+                        if not child:
+                            continue
+                        cols = list(child.keys())
+                        placeholders = ",".join(["?"] * len(cols))
+                        col_list = ",".join(cols)
+                        archive_conn.execute(
+                            f"INSERT OR IGNORE INTO {table_name}({col_list}) VALUES({placeholders})",
+                            tuple(child[c] for c in cols),
+                        )
+
+                # handle OCO legs (may be multiple rows per order)
+                for oid in order_ids:
+                    legs = self._conn.execute("SELECT * FROM order_oco_leg WHERE order_id = ?", (oid,)).fetchall()
+                    for leg in legs:
+                        cols = list(leg.keys())
+                        placeholders = ",".join(["?"] * len(cols))
+                        col_list = ",".join(cols)
+                        archive_conn.execute(
+                            f"INSERT OR IGNORE INTO order_oco_leg({col_list}) VALUES({placeholders})",
+                            tuple(leg[c] for c in cols),
                         )
 
                 events = self._conn.execute(

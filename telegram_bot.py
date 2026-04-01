@@ -5,10 +5,10 @@ import os
 import queue
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 from core import Action, Order, OrderBehavior, Trigger, build_engine
@@ -18,6 +18,8 @@ from storage import SQLiteStorage
 log = logging.getLogger(__name__)
 
 VALID_TF_MINUTES = {1, 5, 15, 30, 60, 120, 240, 1440}
+UI_STATE_KEY = "ui_state"
+UI_DRAFT_KEY = "ui_draft"
 
 
 @dataclass
@@ -84,6 +86,19 @@ class FunctionSpec:
     hook_symbol: Optional[str]
     bought: bool = False
     prev_price: Optional[float] = None
+    tf_minutes: int = 15
+    next_eval_at: Optional[int] = None
+    last_eval_at: Optional[int] = None
+    status: str = "active"
+
+
+@dataclass
+class OcoSpec:
+    order_id: int
+    symbol: str
+    side: str
+    legs: List[Dict[str, Any]]
+    chat_id: int
     tf_minutes: int = 15
     next_eval_at: Optional[int] = None
     last_eval_at: Optional[int] = None
@@ -230,6 +245,25 @@ class TelegramTradingBot:
                 self._trailing_buy_orders.append(spec)
                 self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, None)
 
+        # restore OCO orders
+        self._oco_orders: List[OcoSpec] = []
+        for row in data.get("oco", []):
+            spec = OcoSpec(
+                order_id=row["order_id"],
+                symbol=row["symbol"],
+                side=row["side"],
+                legs=row.get("legs", []),
+                chat_id=row["chat_id"],
+                tf_minutes=row.get("tf_minutes", 15),
+                next_eval_at=self._next_boundary_epoch(row.get("tf_minutes", 15)),
+                last_eval_at=None,
+                status=row["status"],
+            )
+            self._oco_orders.append(spec)
+            self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, None)
+            # attach to engine
+            self._attach_oco_to_engine(spec)
+
     @staticmethod
     def _next_boundary_epoch(tf_minutes: int, now_ts: Optional[int] = None) -> int:
         now = int(now_ts if now_ts is not None else time.time())
@@ -258,9 +292,119 @@ class TelegramTradingBot:
             return True
         return bool(update.effective_chat and update.effective_chat.id == self._authorized_chat_id)
 
-    async def _send(self, update: Update, text: str):
+    async def _send(self, update: Update, text: str, reply_markup: Optional[ReplyKeyboardMarkup] = None):
         if update.effective_chat:
-            await update.effective_chat.send_message(text)
+            await update.effective_chat.send_message(text, reply_markup=reply_markup)
+
+    @staticmethod
+    def _main_menu_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("Nuovo ordine"), KeyboardButton("Ordini attivi")],
+            [KeyboardButton("Impostazioni"), KeyboardButton("Help")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _orders_menu_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("Sell semplice"), KeyboardButton("Buy semplice")],
+            [KeyboardButton("Function"), KeyboardButton("Trailing Sell")],
+            [KeyboardButton("Trailing Buy")],
+            [KeyboardButton("OCO Order")],
+            [KeyboardButton("← Indietro")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _settings_menu_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("Timeframe"), KeyboardButton("Alert")],
+            [KeyboardButton("Echo"), KeyboardButton("Cancella ordine")],
+            [KeyboardButton("← Indietro")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _operator_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [[KeyboardButton("<"), KeyboardButton(">")], [KeyboardButton("Annulla")]]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _yes_no_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [[KeyboardButton("Si"), KeyboardButton("No")], [KeyboardButton("Annulla")]]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _tf_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("1"), KeyboardButton("5"), KeyboardButton("15"), KeyboardButton("30")],
+            [KeyboardButton("60"), KeyboardButton("120"), KeyboardButton("240"), KeyboardButton("1440")],
+            [KeyboardButton("Default"), KeyboardButton("Annulla")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _oco_type_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [[KeyboardButton("limit"), KeyboardButton("stop_limit")], [KeyboardButton("market")], [KeyboardButton("Annulla")]]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _side_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [[KeyboardButton("buy"), KeyboardButton("sell")], [KeyboardButton("Annulla")]]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _confirm_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [[KeyboardButton("Conferma"), KeyboardButton("Annulla")]]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _cancel_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [[KeyboardButton("Annulla")]]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _echo_alert_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [[KeyboardButton("Abilita"), KeyboardButton("Disabilita")], [KeyboardButton("Annulla")]]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _cancel_order_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [[KeyboardButton("Tutti")], [KeyboardButton("Annulla")]]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    async def _show_main_menu(self, update: Update, intro: Optional[str] = None):
+        text = intro or "Menu principale: scegli un'azione."
+        await self._send(update, text, reply_markup=self._main_menu_keyboard())
+
+    async def _show_orders_menu(self, update: Update):
+        await self._send(update, "Nuovo ordine: scegli il tipo.", reply_markup=self._orders_menu_keyboard())
+
+    async def _show_settings_menu(self, update: Update):
+        await self._send(update, "Impostazioni: scegli cosa configurare.", reply_markup=self._settings_menu_keyboard())
+
+    @staticmethod
+    def _set_ui_state(context: ContextTypes.DEFAULT_TYPE, state: str, draft: Optional[Dict[str, Any]] = None):
+        context.user_data[UI_STATE_KEY] = state
+        if draft is not None:
+            context.user_data[UI_DRAFT_KEY] = draft
+
+    @staticmethod
+    def _clear_ui_state(context: ContextTypes.DEFAULT_TYPE):
+        context.user_data.pop(UI_STATE_KEY, None)
+        context.user_data.pop(UI_DRAFT_KEY, None)
+
+    @staticmethod
+    def _get_ui_state(context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
+        return context.user_data.get(UI_STATE_KEY)
+
+    @staticmethod
+    def _get_draft(context: ContextTypes.DEFAULT_TYPE) -> Dict[str, Any]:
+        draft = context.user_data.get(UI_DRAFT_KEY)
+        if not isinstance(draft, dict):
+            draft = {}
+            context.user_data[UI_DRAFT_KEY] = draft
+        return draft
 
     def _queue_message(self, chat_id: int, text: str):
         self._notifications.put((chat_id, text))
@@ -321,6 +465,102 @@ class TelegramTradingBot:
         spec.core_order_id = core_order_id
         self._storage.update_simple_core_order_id(spec.order_id, core_order_id)
 
+    def _attach_oco_to_engine(self, spec: OcoSpec):
+        """Create core engine orders for each OCO leg and wire cancel-sibling behavior."""
+        # ensure poller monitors symbol
+        self._poller.add_symbol(spec.symbol)
+
+        for leg in spec.legs:
+            leg_index = int(leg.get("leg_index"))
+            # generate unique negative core id to avoid colliding with persisted order_id
+            core_id = -(spec.order_id * 10 + leg_index)
+
+            # build trigger depending on leg type and side
+            ordertype = leg.get("ordertype")
+            side = leg.get("side", spec.side)
+
+            if ordertype == "market":
+                trigger = Trigger(leg_index, lambda p: True, f"market leg {leg_index}")
+            else:
+                if side == "buy":
+                    if ordertype == "limit":
+                        val = leg.get("price")
+                        trigger = self._build_trigger(leg_index, "<", val)
+                    else:  # stop_limit
+                        val = leg.get("stop_price")
+                        trigger = self._build_trigger(leg_index, ">", val)
+                else:  # sell
+                    if ordertype == "limit":
+                        val = leg.get("price")
+                        trigger = self._build_trigger(leg_index, ">", val)
+                    else:  # stop_limit
+                        val = leg.get("stop_price")
+                        trigger = self._build_trigger(leg_index, "<", val)
+
+            action_id = self._next_action_id
+            self._next_action_id += 1
+
+            def make_action(o_id, l_idx, l_spec):
+                return Action(
+                    id=action_id,
+                    description=f"OCO {o_id} leg{l_idx}",
+                    execute=lambda price, o_id=o_id, l_idx=l_idx, l_spec=l_spec: self._on_oco_leg_fired(o_id, l_idx, l_spec, price),
+                )
+
+            action = make_action(spec.order_id, leg_index, leg)
+
+            order_obj = Order(
+                id=core_id,
+                symbol=spec.symbol,
+                triggers=[trigger],
+                action=action,
+                behavior=OrderBehavior.CANCEL_ON_FIRE,
+                tf_minutes=spec.tf_minutes,
+                next_eval_at=float(spec.next_eval_at) if spec.next_eval_at is not None else None,
+                last_eval_at=float(spec.last_eval_at) if spec.last_eval_at is not None else None,
+            )
+
+            self._manager.add_order(order_obj)
+            # persist core id mapping
+            self._storage.update_oco_leg_core_order_id(spec.order_id, leg_index, core_id)
+
+    def _on_oco_leg_fired(self, order_id: int, leg_index: int, leg_spec: Dict[str, Any], price: float):
+        # idempotent: check status
+        # update fired leg
+        self._storage.update_oco_leg_status(order_id, leg_index, "filled")
+        self._storage.update_order_status(order_id, "filled")
+        self._storage.append_event("oco_leg_filled", order_id, {"leg_index": leg_index, "price": price})
+
+        # cancel sibling legs and their engine core orders
+        try:
+            # get sibling legs from storage
+            data = self._storage.load_active_orders()
+            # find matching oco
+            for o in data.get("oco", []):
+                if o["order_id"] == order_id:
+                    for l in o.get("legs", []):
+                        if l["leg_index"] != leg_index:
+                            # mark sibling cancelled
+                            self._storage.update_oco_leg_status(order_id, l["leg_index"], "cancelled")
+                            core_id = l.get("core_order_id")
+                            if core_id:
+                                # cancel engine order if present
+                                self._manager.cancel_order(int(core_id))
+                                self._storage.append_event("oco_leg_cancelled", order_id, {"leg_index": l["leg_index"]})
+                    break
+        except Exception as e:
+            log.error(f"Errore nella gestione OCO fired cleanup: {e}")
+        # notify user (best-effort)
+        try:
+            # get chat_id from orders table via storage
+            # we don't have direct API; rely on restored in-memory list
+            for s in getattr(self, "_oco_orders", []):
+                if s.order_id == order_id:
+                    self._queue_message(s.chat_id, f"OCO {order_id} leg {leg_index} eseguita a {price}; sibling cancellato")
+                    break
+        except Exception:
+            pass
+
     def _on_simple_fired(self, spec: SimpleOrderSpec, price: float):
         if spec.status != "active":
             return
@@ -336,7 +576,7 @@ class TelegramTradingBot:
             return
         if update.effective_chat:
             context.application.bot_data["last_chat_id"] = update.effective_chat.id
-        await self._send(update, "Bot avviato. Usa /info per i comandi disponibili.")
+        await self._show_main_menu(update, "Bot avviato. Usa i bottoni per navigare.")
 
     async def _info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -356,7 +596,534 @@ class TelegramTradingBot:
             "/o - lista ordini con order_id\n"
             "/c ORDER_ID | /c a - cancella"
         )
-        await self._send(update, text)
+        await self._send(update, text, reply_markup=self._main_menu_keyboard())
+
+    async def _on_menu_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_authorized(update) or not update.effective_message:
+            return
+        if update.effective_chat:
+            context.application.bot_data["last_chat_id"] = update.effective_chat.id
+
+        text = (update.effective_message.text or "").strip()
+        lowered = text.lower()
+
+        if lowered == "annulla":
+            self._clear_ui_state(context)
+            await self._show_main_menu(update, "Operazione annullata.")
+            return
+
+        if self._get_ui_state(context):
+            handled = await self._handle_guided_flow(update, context, text)
+            if handled:
+                return
+
+        if lowered in {"menu", "help"}:
+            await self._show_main_menu(update)
+            return
+
+        if lowered == "nuovo ordine":
+            await self._show_orders_menu(update)
+            return
+        if lowered == "ordini attivi":
+            await self._cmd_o(update)
+            return
+        if lowered == "impostazioni":
+            await self._show_settings_menu(update)
+            return
+        if lowered == "← indietro":
+            await self._show_main_menu(update)
+            return
+
+        if lowered == "sell semplice":
+            self._set_ui_state(context, "simple_symbol", {"kind": "simple", "side": "sell"})
+            await self._send(update, "SELL semplice: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
+            return
+        if lowered == "buy semplice":
+            self._set_ui_state(context, "simple_symbol", {"kind": "simple", "side": "buy"})
+            await self._send(update, "BUY semplice: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
+            return
+        if lowered == "function":
+            self._set_ui_state(context, "function_symbol", {"kind": "function"})
+            await self._send(update, "FUNCTION: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
+            return
+        if lowered == "trailing sell":
+            self._set_ui_state(context, "ts_symbol", {"kind": "trailing_sell"})
+            await self._send(update, "TRAILING SELL: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
+            return
+        if lowered == "trailing buy":
+            self._set_ui_state(context, "tb_symbol", {"kind": "trailing_buy"})
+            await self._send(update, "TRAILING BUY: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
+            return
+        if lowered == "oco order" or lowered == "oco":
+            self._set_ui_state(context, "oco_symbol", {"kind": "oco"})
+            await self._send(update, "OCO: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
+            return
+
+        if lowered == "timeframe":
+            self._set_ui_state(context, "set_timeframe", {})
+            await self._send(update, "Seleziona timeframe di default", reply_markup=self._tf_keyboard())
+            return
+        if lowered == "alert":
+            self._set_ui_state(context, "set_alert_mode", {})
+            await self._send(update, "Alert BTCUSDT: scegli azione", reply_markup=self._echo_alert_keyboard())
+            return
+        if lowered == "echo":
+            self._set_ui_state(context, "set_echo", {})
+            await self._send(update, "Echo prezzi: scegli azione", reply_markup=self._echo_alert_keyboard())
+            return
+        if lowered == "cancella ordine":
+            self._set_ui_state(context, "cancel_order", {})
+            await self._send(update, "Inserisci order_id oppure scegli Tutti", reply_markup=self._cancel_order_keyboard())
+            return
+
+    async def _handle_guided_flow(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
+        state = self._get_ui_state(context)
+        if not state:
+            return False
+        draft = self._get_draft(context)
+        lowered = text.lower()
+
+        try:
+            if state == "simple_symbol":
+                draft["symbol"] = text.upper()
+                self._set_ui_state(context, "simple_op", draft)
+                await self._send(update, "Scegli operatore trigger", reply_markup=self._operator_keyboard())
+                return True
+            if state == "simple_op":
+                if text not in {"<", ">"}:
+                    await self._send(update, "Operatore non valido: usa i bottoni < o >", reply_markup=self._operator_keyboard())
+                    return True
+                draft["op"] = text
+                self._set_ui_state(context, "simple_trigger", draft)
+                await self._send(update, "Inserisci valore trigger (es. 60000)", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "simple_trigger":
+                draft["trigger"] = float(text)
+                self._set_ui_state(context, "simple_qty", draft)
+                await self._send(update, "Inserisci quantity (es. 0.001)", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "simple_qty":
+                draft["qty"] = float(text)
+                self._set_ui_state(context, "simple_hook_choice", draft)
+                await self._send(update, "Vuoi usare un pairhook?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "simple_hook_choice":
+                if lowered == "si":
+                    self._set_ui_state(context, "simple_hook_symbol", draft)
+                    await self._send(update, "Inserisci simbolo hook (es. ETHUSDT)", reply_markup=self._cancel_keyboard())
+                    return True
+                if lowered == "no":
+                    draft["hook"] = None
+                    self._set_ui_state(context, "simple_tf", draft)
+                    await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
+                    return True
+                await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "simple_hook_symbol":
+                draft["hook"] = text.upper()
+                self._set_ui_state(context, "simple_tf", draft)
+                await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
+                return True
+            if state == "simple_tf":
+                tf = self._parse_tf_choice(text)
+                draft["tf"] = tf
+                self._set_ui_state(context, "simple_confirm", draft)
+                await self._send(
+                    update,
+                    f"Confermi ordine {draft['side']} su {draft['symbol']}?",
+                    reply_markup=self._confirm_keyboard(),
+                )
+                return True
+            if state == "simple_confirm":
+                if lowered != "conferma":
+                    await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
+                    return True
+                parts = [
+                    "/s" if draft["side"] == "sell" else "/b",
+                    draft["symbol"],
+                    draft["op"],
+                    str(draft["trigger"]),
+                    str(draft["qty"]),
+                ]
+                if draft.get("hook"):
+                    parts.append(f"@{draft['hook']}")
+                parts.append(f"tf={draft['tf']}")
+                await self._cmd_simple(update, parts, side=draft["side"])
+                self._clear_ui_state(context)
+                await self._show_orders_menu(update)
+                return True
+
+            if state == "function_symbol":
+                draft["symbol"] = text.upper()
+                self._set_ui_state(context, "function_op", draft)
+                await self._send(update, "Scegli operatore trigger", reply_markup=self._operator_keyboard())
+                return True
+            if state == "function_op":
+                if text not in {"<", ">"}:
+                    await self._send(update, "Operatore non valido: usa i bottoni < o >", reply_markup=self._operator_keyboard())
+                    return True
+                draft["op"] = text
+                self._set_ui_state(context, "function_trigger", draft)
+                await self._send(update, "Inserisci trigger", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "function_trigger":
+                draft["trigger"] = float(text)
+                self._set_ui_state(context, "function_qty", draft)
+                await self._send(update, "Inserisci quantity", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "function_qty":
+                draft["qty"] = float(text)
+                self._set_ui_state(context, "function_percent", draft)
+                await self._send(update, "Inserisci percent trailing (es. 1.5)", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "function_percent":
+                draft["percent"] = float(text)
+                self._set_ui_state(context, "function_hook_choice", draft)
+                await self._send(update, "Vuoi usare un pairhook?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "function_hook_choice":
+                if lowered == "si":
+                    self._set_ui_state(context, "function_hook_symbol", draft)
+                    await self._send(update, "Inserisci simbolo hook", reply_markup=self._cancel_keyboard())
+                    return True
+                if lowered == "no":
+                    draft["hook"] = None
+                    self._set_ui_state(context, "function_tf", draft)
+                    await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
+                    return True
+                await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "function_hook_symbol":
+                draft["hook"] = text.upper()
+                self._set_ui_state(context, "function_tf", draft)
+                await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
+                return True
+            if state == "function_tf":
+                draft["tf"] = self._parse_tf_choice(text)
+                self._set_ui_state(context, "function_confirm", draft)
+                await self._send(update, f"Confermi FUNCTION su {draft['symbol']}?", reply_markup=self._confirm_keyboard())
+                return True
+            if state == "function_confirm":
+                if lowered != "conferma":
+                    await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
+                    return True
+                parts = [
+                    "/f",
+                    draft["symbol"],
+                    draft["op"],
+                    str(draft["trigger"]),
+                    str(draft["qty"]),
+                    str(draft["percent"]),
+                ]
+                if draft.get("hook"):
+                    parts.append(f"@{draft['hook']}")
+                parts.append(f"tf={draft['tf']}")
+                await self._cmd_f(update, parts)
+                self._clear_ui_state(context)
+                await self._show_orders_menu(update)
+                return True
+
+            if state == "ts_symbol":
+                draft["symbol"] = text.upper()
+                self._set_ui_state(context, "ts_percent", draft)
+                await self._send(update, "Inserisci percent trailing", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "ts_percent":
+                draft["percent"] = float(text)
+                self._set_ui_state(context, "ts_qty", draft)
+                await self._send(update, "Inserisci quantity", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "ts_qty":
+                draft["qty"] = float(text)
+                self._set_ui_state(context, "ts_limit_choice", draft)
+                await self._send(update, "Vuoi impostare LIMIT?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "ts_limit_choice":
+                if lowered == "si":
+                    self._set_ui_state(context, "ts_limit", draft)
+                    await self._send(update, "Inserisci limit (es. 59000)", reply_markup=self._cancel_keyboard())
+                    return True
+                if lowered == "no":
+                    draft["limit"] = None
+                    self._set_ui_state(context, "ts_hook_choice", draft)
+                    await self._send(update, "Vuoi usare pairhook?", reply_markup=self._yes_no_keyboard())
+                    return True
+                await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "ts_limit":
+                draft["limit"] = float(text)
+                self._set_ui_state(context, "ts_hook_choice", draft)
+                await self._send(update, "Vuoi usare pairhook?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "ts_hook_choice":
+                if lowered == "si":
+                    self._set_ui_state(context, "ts_hook_symbol", draft)
+                    await self._send(update, "Inserisci simbolo hook", reply_markup=self._cancel_keyboard())
+                    return True
+                if lowered == "no":
+                    draft["hook"] = None
+                    self._set_ui_state(context, "ts_tf", draft)
+                    await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
+                    return True
+                await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "ts_hook_symbol":
+                draft["hook"] = text.upper()
+                self._set_ui_state(context, "ts_tf", draft)
+                await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
+                return True
+            if state == "ts_tf":
+                draft["tf"] = self._parse_tf_choice(text)
+                self._set_ui_state(context, "ts_confirm", draft)
+                await self._send(update, f"Confermi TRAILING SELL su {draft['symbol']}?", reply_markup=self._confirm_keyboard())
+                return True
+            if state == "ts_confirm":
+                if lowered != "conferma":
+                    await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
+                    return True
+                parts = ["/S", draft["symbol"], str(draft["percent"]), str(draft["qty"])]
+                if draft.get("limit") is not None:
+                    parts.append(str(draft["limit"]))
+                if draft.get("hook"):
+                    parts.append(f"@{draft['hook']}")
+                parts.append(f"tf={draft['tf']}")
+                await self._cmd_S(update, parts)
+                self._clear_ui_state(context)
+                await self._show_orders_menu(update)
+                return True
+
+            if state == "tb_symbol":
+                draft["symbol"] = text.upper()
+                self._set_ui_state(context, "tb_percent", draft)
+                await self._send(update, "Inserisci percent trailing", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "tb_percent":
+                draft["percent"] = float(text)
+                self._set_ui_state(context, "tb_qty", draft)
+                await self._send(update, "Inserisci quantity", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "tb_qty":
+                draft["qty"] = float(text)
+                self._set_ui_state(context, "tb_limit", draft)
+                await self._send(update, "Inserisci LIMIT", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "tb_limit":
+                draft["limit"] = float(text)
+                self._set_ui_state(context, "tb_tf", draft)
+                await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
+                return True
+            if state == "tb_tf":
+                draft["tf"] = self._parse_tf_choice(text)
+                self._set_ui_state(context, "tb_confirm", draft)
+                await self._send(update, f"Confermi TRAILING BUY su {draft['symbol']}?", reply_markup=self._confirm_keyboard())
+                return True
+            if state == "tb_confirm":
+                if lowered != "conferma":
+                    await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
+                    return True
+                parts = ["/B", draft["symbol"], str(draft["percent"]), str(draft["qty"]), str(draft["limit"]), f"tf={draft['tf']}"]
+                await self._cmd_B(update, parts)
+                self._clear_ui_state(context)
+                await self._show_orders_menu(update)
+                return True
+
+            # OCO guided flow
+            if state == "oco_symbol":
+                draft["symbol"] = text.upper()
+                self._set_ui_state(context, "oco_side", draft)
+                await self._send(update, "Seleziona side per OCO (buy/sell)", reply_markup=self._side_keyboard())
+                return True
+            if state == "oco_side":
+                if lowered not in {"buy", "sell"}:
+                    await self._send(update, "Scegli buy o sell", reply_markup=self._side_keyboard())
+                    return True
+                draft["side"] = lowered
+                draft["legs"] = []
+                self._set_ui_state(context, "oco_leg1_type", draft)
+                await self._send(update, "Leg 1: scegli tipo (limit/stop_limit/market)", reply_markup=self._oco_type_keyboard())
+                return True
+            if state == "oco_leg1_type":
+                if lowered not in {"limit", "stop_limit", "market"}:
+                    await self._send(update, "Scegli tipo leg valido", reply_markup=self._oco_type_keyboard())
+                    return True
+                draft["current_leg"] = {"leg_index": 1, "ordertype": lowered}
+                if lowered == "limit":
+                    self._set_ui_state(context, "oco_leg1_price", draft)
+                    await self._send(update, "Inserisci prezzo limit per leg 1", reply_markup=self._cancel_keyboard())
+                    return True
+                if lowered == "stop_limit":
+                    self._set_ui_state(context, "oco_leg1_stop", draft)
+                    await self._send(update, "Inserisci stop price per leg 1", reply_markup=self._cancel_keyboard())
+                    return True
+                if lowered == "market":
+                    self._set_ui_state(context, "oco_leg1_qty", draft)
+                    await self._send(update, "Inserisci quantity per leg 1", reply_markup=self._cancel_keyboard())
+                    return True
+            if state == "oco_leg1_price":
+                draft["current_leg"]["price"] = float(text)
+                self._set_ui_state(context, "oco_leg1_qty", draft)
+                await self._send(update, "Inserisci quantity per leg 1", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "oco_leg1_stop":
+                draft["current_leg"]["stop_price"] = float(text)
+                self._set_ui_state(context, "oco_leg1_limit", draft)
+                await self._send(update, "Inserisci limit price per leg 1", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "oco_leg1_limit":
+                draft["current_leg"]["limit_price"] = float(text)
+                self._set_ui_state(context, "oco_leg1_qty", draft)
+                await self._send(update, "Inserisci quantity per leg 1", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "oco_leg1_qty":
+                draft["current_leg"]["qty"] = float(text)
+                # finalize leg1
+                leg = draft.pop("current_leg")
+                leg["side"] = draft["side"]
+                draft["legs"].append(leg)
+                # start leg2
+                self._set_ui_state(context, "oco_leg2_type", draft)
+                await self._send(update, "Leg 2: scegli tipo (limit/stop_limit/market)", reply_markup=self._oco_type_keyboard())
+                return True
+            if state == "oco_leg2_type":
+                if lowered not in {"limit", "stop_limit", "market"}:
+                    await self._send(update, "Scegli tipo leg valido", reply_markup=self._oco_type_keyboard())
+                    return True
+                draft["current_leg"] = {"leg_index": 2, "ordertype": lowered}
+                if lowered == "limit":
+                    self._set_ui_state(context, "oco_leg2_price", draft)
+                    await self._send(update, "Inserisci prezzo limit per leg 2", reply_markup=self._cancel_keyboard())
+                    return True
+                if lowered == "stop_limit":
+                    self._set_ui_state(context, "oco_leg2_stop", draft)
+                    await self._send(update, "Inserisci stop price per leg 2", reply_markup=self._cancel_keyboard())
+                    return True
+                if lowered == "market":
+                    self._set_ui_state(context, "oco_leg2_qty", draft)
+                    await self._send(update, "Inserisci quantity per leg 2", reply_markup=self._cancel_keyboard())
+                    return True
+            if state == "oco_leg2_price":
+                draft["current_leg"]["price"] = float(text)
+                self._set_ui_state(context, "oco_leg2_qty", draft)
+                await self._send(update, "Inserisci quantity per leg 2", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "oco_leg2_stop":
+                draft["current_leg"]["stop_price"] = float(text)
+                self._set_ui_state(context, "oco_leg2_limit", draft)
+                await self._send(update, "Inserisci limit price per leg 2", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "oco_leg2_limit":
+                draft["current_leg"]["limit_price"] = float(text)
+                self._set_ui_state(context, "oco_leg2_qty", draft)
+                await self._send(update, "Inserisci quantity per leg 2", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "oco_leg2_qty":
+                draft["current_leg"]["qty"] = float(text)
+                leg = draft.pop("current_leg")
+                leg["side"] = draft["side"]
+                draft["legs"].append(leg)
+                # optional tf
+                self._set_ui_state(context, "oco_tf", draft)
+                await self._send(update, "Seleziona timeframe opzionale (Default/1/5/15/30/60/120/240/1440)", reply_markup=self._tf_keyboard())
+                return True
+            if state == "oco_tf":
+                tf = self._parse_tf_choice(text)
+                draft["tf"] = tf
+                self._set_ui_state(context, "oco_confirm", draft)
+                legs_text = []
+                for l in draft["legs"]:
+                    legs_text.append(str(l))
+                await self._send(update, f"Riepilogo OCO: symbol={draft['symbol']} side={draft['side']} tf={tf}\nLegs:\n" + "\n".join(legs_text), reply_markup=self._confirm_keyboard())
+                return True
+            if state == "oco_confirm":
+                if lowered != "conferma":
+                    await self._send(update, "Premi Conferma per creare l'OCO (verrà salvato come preview)", reply_markup=self._confirm_keyboard())
+                    return True
+                # persist OCO and attach to engine
+                order_id = self._new_order_id()
+                chat_id = update.effective_chat.id if update.effective_chat else None
+                legs = draft.get("legs", [])
+                tf = draft.get("tf", self._default_tf_minutes)
+                self._storage.save_oco_order(
+                    order_id=order_id,
+                    chat_id=chat_id,
+                    symbol=draft["symbol"],
+                    side=draft["side"],
+                    legs=legs,
+                    hook_symbol=None,
+                    tf_minutes=tf,
+                    next_eval_at=self._next_boundary_epoch(tf),
+                    last_eval_at=None,
+                    status="active",
+                )
+                oco_spec = OcoSpec(order_id=order_id, symbol=draft["symbol"], side=draft["side"], legs=legs, chat_id=chat_id, tf_minutes=tf)
+                self._attach_oco_to_engine(oco_spec)
+                self._storage.append_event("oco_created", order_id, draft)
+                await self._send(update, f"OCO {order_id} creato e attivato.")
+                self._clear_ui_state(context)
+                await self._show_orders_menu(update)
+                return True
+
+            if state == "set_timeframe":
+                tf = self._parse_tf_choice(text)
+                await self._cmd_t(update, ["/t", str(tf)])
+                self._clear_ui_state(context)
+                await self._show_settings_menu(update)
+                return True
+            if state == "set_echo":
+                if lowered not in {"abilita", "disabilita"}:
+                    await self._send(update, "Scegli Abilita o Disabilita", reply_markup=self._echo_alert_keyboard())
+                    return True
+                await self._cmd_e(update, ["/e", "1" if lowered == "abilita" else "0"])
+                self._clear_ui_state(context)
+                await self._show_settings_menu(update)
+                return True
+            if state == "set_alert_mode":
+                if lowered == "disabilita":
+                    await self._cmd_a(update, ["/a", "0"])
+                    self._clear_ui_state(context)
+                    await self._show_settings_menu(update)
+                    return True
+                if lowered == "abilita":
+                    self._set_ui_state(context, "set_alert_percent", draft)
+                    await self._send(update, "Inserisci percentuale alert (es. 2.0)", reply_markup=self._cancel_keyboard())
+                    return True
+                await self._send(update, "Scegli Abilita o Disabilita", reply_markup=self._echo_alert_keyboard())
+                return True
+            if state == "set_alert_percent":
+                pct = float(text)
+                await self._cmd_a(update, ["/a", "1", str(pct)])
+                self._clear_ui_state(context)
+                await self._show_settings_menu(update)
+                return True
+            if state == "cancel_order":
+                if lowered == "tutti":
+                    await self._cmd_c(update, ["/c", "a"])
+                    self._clear_ui_state(context)
+                    await self._show_settings_menu(update)
+                    return True
+                await self._cmd_c(update, ["/c", text])
+                self._clear_ui_state(context)
+                await self._show_settings_menu(update)
+                return True
+        except ValueError as exc:
+            await self._send(update, f"Valore non valido: {exc}")
+            return True
+        except Exception as exc:
+            await self._send(update, f"Errore: {exc}")
+            self._clear_ui_state(context)
+            await self._show_main_menu(update)
+            return True
+
+        return False
+
+    def _parse_tf_choice(self, text: str) -> int:
+        lowered = text.strip().lower()
+        if lowered == "default":
+            return self._default_tf_minutes
+        tf = int(lowered)
+        if tf not in VALID_TF_MINUTES:
+            raise ValueError("Timeframe valido: 1,5,15,30,60,120,240,1440")
+        return tf
 
     async def _on_slash_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.effective_message:
@@ -717,7 +1484,7 @@ class TelegramTradingBot:
         raise ValueError("order_id non trovato")
 
     def _init_trailing_sell(self, spec: TrailingSellSpec):
-            price = self._feed.get_price(spec.symbol, spec.tf_minutes)
+        price = self._feed.get_price(spec.symbol, spec.tf_minutes)
         spec.max_price = price
         if spec.limit is None:
             spec.armed = True
@@ -726,7 +1493,7 @@ class TelegramTradingBot:
             spec.arm_op = "<" if price >= spec.limit else ">"
 
     def _init_trailing_buy(self, spec: TrailingBuySpec):
-            price = self._feed.get_price(spec.symbol, spec.tf_minutes)
+        price = self._feed.get_price(spec.symbol, spec.tf_minutes)
         spec.min_price = price
         spec.arm_op = "<" if price >= spec.limit else ">"
 
@@ -952,6 +1719,7 @@ class TelegramTradingBot:
         app.add_handler(CommandHandler("start", self._start))
         app.add_handler(CommandHandler("info", self._info))
         app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^/"), self._on_slash_text))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.Regex(r"^/"), self._on_menu_text))
         app.add_handler(MessageHandler(filters.ALL, self._capture_chat_id))
 
         app.job_queue.run_repeating(self._job_tick, interval=1.0, first=2.0)
