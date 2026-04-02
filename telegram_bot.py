@@ -136,9 +136,51 @@ class TelegramTradingBot:
 
         self._notifications: "queue.Queue[Tuple[int, str]]" = queue.Queue()
         self._app: Optional[Application] = None
+        self._exchange_client = None
+        self._binance_api_error_cls = Exception
+        self._binance_request_error_cls = Exception
+        self._binance_order_error_cls = Exception
+        self._init_exchange_client()
 
         self._load_settings()
         self._restore_active_orders()
+
+    def _init_exchange_client(self):
+        """Initialize Binance spot client for real order execution."""
+        try:
+            from binance.client import Client
+            from binance.exceptions import BinanceAPIException, BinanceOrderException, BinanceRequestException
+        except Exception as exc:
+            log.warning("Client Binance non disponibile per esecuzione ordini: %s", exc)
+            return
+
+        api_key = os.getenv("BINANCE_API_KEY")
+        api_secret = os.getenv("BINANCE_SECRET_KEY")
+        if not api_key or not api_secret:
+            log.warning("BINANCE_API_KEY/BINANCE_SECRET_KEY non impostate: esecuzione ordini disabilitata")
+            return
+
+        self._exchange_client = Client(api_key, api_secret)
+        self._binance_api_error_cls = BinanceAPIException
+        self._binance_request_error_cls = BinanceRequestException
+        self._binance_order_error_cls = BinanceOrderException
+
+    def _execute_simple_order_on_exchange(self, spec: SimpleOrderSpec) -> Dict[str, Any]:
+        """Submit a MARKET order to Binance Spot and return raw API response."""
+        if self._exchange_client is None:
+            raise RuntimeError("Client Binance non inizializzato (chiavi mancanti o libreria non disponibile)")
+
+        from binance.client import Client
+
+        symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
+        side = Client.SIDE_SELL if spec.side == "sell" else Client.SIDE_BUY
+        return self._exchange_client.create_order(
+            symbol=symbol,
+            side=side,
+            type=Client.ORDER_TYPE_MARKET,
+            quantity=spec.qty,
+            recvWindow=5000,
+        )
 
     def _load_settings(self):
         tf = self._storage.get_setting("default_tf_minutes")
@@ -327,7 +369,7 @@ class TelegramTradingBot:
 
     @staticmethod
     def _operator_keyboard() -> ReplyKeyboardMarkup:
-        keyboard = [[KeyboardButton("◀️"), KeyboardButton("▶️")], [KeyboardButton("Annulla")]]
+        keyboard = [[KeyboardButton("<"), KeyboardButton(">")], [KeyboardButton("Annulla")]]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @staticmethod
@@ -571,12 +613,48 @@ class TelegramTradingBot:
     def _on_simple_fired(self, spec: SimpleOrderSpec, price: float):
         if spec.status != "active":
             return
-        spec.status = "filled"
         verb = "Vendita" if spec.side == "sell" else "Acquisto"
         symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
-        self._queue_message(spec.chat_id, f"{verb} {symbol} qty={spec.qty} eseguita a {price}")
-        self._storage.update_order_status(spec.order_id, "filled")
-        self._storage.append_event("simple_filled", spec.order_id, {"price": price})
+
+        try:
+            exchange_resp = self._execute_simple_order_on_exchange(spec)
+            spec.status = "filled"
+            self._storage.update_order_status(spec.order_id, "filled")
+            self._storage.append_event(
+                "simple_filled",
+                spec.order_id,
+                {
+                    "price": price,
+                    "exchange_symbol": symbol,
+                    "exchange_order_id": exchange_resp.get("orderId"),
+                    "exchange_status": exchange_resp.get("status"),
+                    "executed_qty": exchange_resp.get("executedQty"),
+                },
+            )
+            self._queue_message(
+                spec.chat_id,
+                f"{verb} {symbol} qty={spec.qty} eseguita a {price} (exchange orderId={exchange_resp.get('orderId')})",
+            )
+        except (self._binance_api_error_cls, self._binance_request_error_cls, self._binance_order_error_cls) as exc:
+            spec.status = "error"
+            self._storage.update_order_status(spec.order_id, "error")
+            self._storage.append_event(
+                "simple_exchange_error",
+                spec.order_id,
+                {"price": price, "exchange_symbol": symbol, "error": str(exc), "error_type": type(exc).__name__},
+            )
+            self._queue_message(spec.chat_id, f"Errore esecuzione {verb.lower()} {symbol}: {exc}")
+            log.error("Errore Binance su ordine semplice %s: %s", spec.order_id, exc)
+        except Exception as exc:
+            spec.status = "error"
+            self._storage.update_order_status(spec.order_id, "error")
+            self._storage.append_event(
+                "simple_exchange_error",
+                spec.order_id,
+                {"price": price, "exchange_symbol": symbol, "error": str(exc), "error_type": type(exc).__name__},
+            )
+            self._queue_message(spec.chat_id, f"Errore interno esecuzione {verb.lower()} {symbol}: {exc}")
+            log.exception("Errore inatteso su ordine semplice %s", spec.order_id)
 
     async def _start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -717,10 +795,16 @@ class TelegramTradingBot:
                 await self._send(update, "Scegli operatore trigger", reply_markup=self._operator_keyboard())
                 return True
             if state == "simple_op":
-                if text not in {"<", ">"}:
+                op_input = text.strip()
+                mapped = None
+                if op_input in ("<", "◀️", "◀", "←"):
+                    mapped = "<"
+                elif op_input in (">", "▶️", "▶", "→"):
+                    mapped = ">"
+                if mapped is None:
                     await self._send(update, "Operatore non valido: usa i bottoni < o >", reply_markup=self._operator_keyboard())
                     return True
-                draft["op"] = text
+                draft["op"] = mapped
                 self._set_ui_state(context, "simple_trigger", draft)
                 await self._send(update, "Inserisci valore trigger (es. 60000)", reply_markup=self._cancel_keyboard())
                 return True
@@ -735,11 +819,11 @@ class TelegramTradingBot:
                 await self._send(update, "Vuoi usare un pairhook?", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "simple_hook_choice":
-                if lowered == "si":
+                if normalized == "si":
                     self._set_ui_state(context, "simple_hook_symbol", draft)
                     await self._send(update, "Inserisci simbolo hook (es. ETHUSDT)", reply_markup=self._cancel_keyboard())
                     return True
-                if lowered == "no":
+                if normalized == "no":
                     draft["hook"] = None
                     self._set_ui_state(context, "simple_tf", draft)
                     await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
@@ -762,7 +846,7 @@ class TelegramTradingBot:
                 )
                 return True
             if state == "simple_confirm":
-                if lowered != "conferma":
+                if normalized != "conferma":
                     await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
                     return True
                 parts = [
@@ -786,10 +870,16 @@ class TelegramTradingBot:
                 await self._send(update, "Scegli operatore trigger", reply_markup=self._operator_keyboard())
                 return True
             if state == "function_op":
-                if text not in {"<", ">"}:
+                op_input = text.strip()
+                mapped = None
+                if op_input in ("<", "◀️", "◀", "←"):
+                    mapped = "<"
+                elif op_input in (">", "▶️", "▶", "→"):
+                    mapped = ">"
+                if mapped is None:
                     await self._send(update, "Operatore non valido: usa i bottoni < o >", reply_markup=self._operator_keyboard())
                     return True
-                draft["op"] = text
+                draft["op"] = mapped
                 self._set_ui_state(context, "function_trigger", draft)
                 await self._send(update, "Inserisci trigger", reply_markup=self._cancel_keyboard())
                 return True
@@ -809,11 +899,11 @@ class TelegramTradingBot:
                 await self._send(update, "Vuoi usare un pairhook?", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "function_hook_choice":
-                if lowered == "si":
+                if normalized == "si":
                     self._set_ui_state(context, "function_hook_symbol", draft)
                     await self._send(update, "Inserisci simbolo hook", reply_markup=self._cancel_keyboard())
                     return True
-                if lowered == "no":
+                if normalized == "no":
                     draft["hook"] = None
                     self._set_ui_state(context, "function_tf", draft)
                     await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
@@ -831,7 +921,7 @@ class TelegramTradingBot:
                 await self._send(update, f"Confermi FUNCTION su {draft['symbol']}?", reply_markup=self._confirm_keyboard())
                 return True
             if state == "function_confirm":
-                if lowered != "conferma":
+                if normalized != "conferma":
                     await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
                     return True
                 parts = [
@@ -866,11 +956,11 @@ class TelegramTradingBot:
                 await self._send(update, "Vuoi impostare LIMIT?", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "ts_limit_choice":
-                if lowered == "si":
+                if normalized == "si":
                     self._set_ui_state(context, "ts_limit", draft)
                     await self._send(update, "Inserisci limit (es. 59000)", reply_markup=self._cancel_keyboard())
                     return True
-                if lowered == "no":
+                if normalized == "no":
                     draft["limit"] = None
                     self._set_ui_state(context, "ts_hook_choice", draft)
                     await self._send(update, "Vuoi usare pairhook?", reply_markup=self._yes_no_keyboard())
@@ -883,11 +973,11 @@ class TelegramTradingBot:
                 await self._send(update, "Vuoi usare pairhook?", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "ts_hook_choice":
-                if lowered == "si":
+                if normalized == "si":
                     self._set_ui_state(context, "ts_hook_symbol", draft)
                     await self._send(update, "Inserisci simbolo hook", reply_markup=self._cancel_keyboard())
                     return True
-                if lowered == "no":
+                if normalized == "no":
                     draft["hook"] = None
                     self._set_ui_state(context, "ts_tf", draft)
                     await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
@@ -905,7 +995,7 @@ class TelegramTradingBot:
                 await self._send(update, f"Confermi TRAILING SELL su {draft['symbol']}?", reply_markup=self._confirm_keyboard())
                 return True
             if state == "ts_confirm":
-                if lowered != "conferma":
+                if normalized != "conferma":
                     await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
                     return True
                 parts = ["/S", draft["symbol"], str(draft["percent"]), str(draft["qty"])]
@@ -945,7 +1035,7 @@ class TelegramTradingBot:
                 await self._send(update, f"Confermi TRAILING BUY su {draft['symbol']}?", reply_markup=self._confirm_keyboard())
                 return True
             if state == "tb_confirm":
-                if lowered != "conferma":
+                if normalized != "conferma":
                     await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
                     return True
                 parts = ["/B", draft["symbol"], str(draft["percent"]), str(draft["qty"]), str(draft["limit"]), f"tf={draft['tf']}"]
@@ -961,28 +1051,28 @@ class TelegramTradingBot:
                 await self._send(update, "Seleziona side per OCO (buy/sell)", reply_markup=self._side_keyboard())
                 return True
             if state == "oco_side":
-                if lowered not in {"buy", "sell"}:
+                if normalized not in {"buy", "sell"}:
                     await self._send(update, "Scegli buy o sell", reply_markup=self._side_keyboard())
                     return True
-                draft["side"] = lowered
+                draft["side"] = normalized
                 draft["legs"] = []
                 self._set_ui_state(context, "oco_leg1_type", draft)
                 await self._send(update, "Leg 1: scegli tipo (limit/stop_limit/market)", reply_markup=self._oco_type_keyboard())
                 return True
             if state == "oco_leg1_type":
-                if lowered not in {"limit", "stop_limit", "market"}:
+                if normalized not in {"limit", "stop_limit", "market"}:
                     await self._send(update, "Scegli tipo leg valido", reply_markup=self._oco_type_keyboard())
                     return True
-                draft["current_leg"] = {"leg_index": 1, "ordertype": lowered}
-                if lowered == "limit":
+                draft["current_leg"] = {"leg_index": 1, "ordertype": normalized}
+                if normalized == "limit":
                     self._set_ui_state(context, "oco_leg1_price", draft)
                     await self._send(update, "Inserisci prezzo limit per leg 1", reply_markup=self._cancel_keyboard())
                     return True
-                if lowered == "stop_limit":
+                if normalized == "stop_limit":
                     self._set_ui_state(context, "oco_leg1_stop", draft)
                     await self._send(update, "Inserisci stop price per leg 1", reply_markup=self._cancel_keyboard())
                     return True
-                if lowered == "market":
+                if normalized == "market":
                     self._set_ui_state(context, "oco_leg1_qty", draft)
                     await self._send(update, "Inserisci quantity per leg 1", reply_markup=self._cancel_keyboard())
                     return True
@@ -1012,19 +1102,19 @@ class TelegramTradingBot:
                 await self._send(update, "Leg 2: scegli tipo (limit/stop_limit/market)", reply_markup=self._oco_type_keyboard())
                 return True
             if state == "oco_leg2_type":
-                if lowered not in {"limit", "stop_limit", "market"}:
+                if normalized not in {"limit", "stop_limit", "market"}:
                     await self._send(update, "Scegli tipo leg valido", reply_markup=self._oco_type_keyboard())
                     return True
-                draft["current_leg"] = {"leg_index": 2, "ordertype": lowered}
-                if lowered == "limit":
+                draft["current_leg"] = {"leg_index": 2, "ordertype": normalized}
+                if normalized == "limit":
                     self._set_ui_state(context, "oco_leg2_price", draft)
                     await self._send(update, "Inserisci prezzo limit per leg 2", reply_markup=self._cancel_keyboard())
                     return True
-                if lowered == "stop_limit":
+                if normalized == "stop_limit":
                     self._set_ui_state(context, "oco_leg2_stop", draft)
                     await self._send(update, "Inserisci stop price per leg 2", reply_markup=self._cancel_keyboard())
                     return True
-                if lowered == "market":
+                if normalized == "market":
                     self._set_ui_state(context, "oco_leg2_qty", draft)
                     await self._send(update, "Inserisci quantity per leg 2", reply_markup=self._cancel_keyboard())
                     return True
@@ -1062,7 +1152,7 @@ class TelegramTradingBot:
                 await self._send(update, f"Riepilogo OCO: symbol={draft['symbol']} side={draft['side']} tf={tf}\nLegs:\n" + "\n".join(legs_text), reply_markup=self._confirm_keyboard())
                 return True
             if state == "oco_confirm":
-                if lowered != "conferma":
+                if normalized != "conferma":
                     await self._send(update, "Premi Conferma per creare l'OCO (verrà salvato come preview)", reply_markup=self._confirm_keyboard())
                     return True
                 # persist OCO and attach to engine
