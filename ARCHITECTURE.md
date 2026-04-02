@@ -272,5 +272,29 @@ Se vuoi, procedo subito a:
 - aggiornare `requirements.txt` e `.gitignore`,
 - estrarre e documentare le chiamate `price_feeds` necessarie per ottenere il close price allineato.
 
+## Stato attuale (2026-04-03)
+
+Breve sintesi dello stato del progetto dopo l'ultima serie di modifiche:
+
+- Funzionalità completate:
+  - Creazione automatica di OCO figlie al fill di buy (`post_fill_action`), con supporto per TP/SL indipendenti.
+  - Supporto per TP/SL in modalità `fixed`, `%` e `trail:x%` (trailing leg crea un `order_trailing` e viene linkata via `order_trailing.oco_parent_order_id`).
+  - Persistenza: nuove colonne/table aggiunte e migrate via `CREATE TABLE IF NOT EXISTS` in `SQLiteStorage`.
+  - Runtime: linkage OCO ↔ core orders (`order_oco_leg.core_order_id`), cancel-sibling che annulla anche trailing linked.
+  - UI: wizard guidato per configurare `post_fill_action` senza scrivere token `oco:` manualmente.
+  - Test: test di integrazione e storage aggiornati; test suite locale passata.
+
+- File principali toccati:
+  - `telegram_bot.py` — parsing, wizard, `_create_auto_oco_from_post_fill`, `_attach_oco_to_engine`, finalizzazione OCO.
+  - `storage.py` — migrazioni schema, persistenza `order_oco`, `order_oco_leg`, `order_trailing` linkage.
+  - `tests/test_oco_integration.py`, `tests/test_oco_storage.py`, `tests/test_post_fill_action.py` — nuovi test e adattamenti.
+
+- Note operative per chi riceve il progetto:
+  - Il DB `data/bot.sqlite3` è l'autorità per mapping core_id ↔ leg; se copi il DB preservi lo stato runtime.
+  - Il codice usa `CREATE TABLE IF NOT EXISTS` per compatibilità di migrazioni semplici; verificare i log di avvio per eventuali WARN/ERROR.
+  - Per continuare lo sviluppo, aprire un branch (es. `pass1-migrazione`) e lavorare sulle issue/documentazione da `ARCHITECTURE.md` e `README.md`.
+
+Se vuoi che prepari un file `docs/HANDOFF.md` contenente checklist esatta, comandi `git` e snippet di export/import DB, lo creo subito.
+
 Dimmi quali passi vuoi che esegua adesso: procedo ad applicare modifiche al codice e creare i file necessari (DB schema, .gitignore, requirements aggiornato) oppure preferisci prima che generi test/unit?
 
