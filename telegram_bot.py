@@ -182,6 +182,55 @@ class TelegramTradingBot:
             recvWindow=5000,
         )
 
+    def _execute_market_order_on_exchange(self, side: str, symbol: str, qty: float) -> Dict[str, Any]:
+        """Submit a MARKET order to Binance Spot and return raw API response."""
+        if self._exchange_client is None:
+            raise RuntimeError("Client Binance non inizializzato (chiavi mancanti o libreria non disponibile)")
+
+        from binance.client import Client
+
+        exchange_side = Client.SIDE_SELL if side == "sell" else Client.SIDE_BUY
+        return self._exchange_client.create_order(
+            symbol=symbol,
+            side=exchange_side,
+            type=Client.ORDER_TYPE_MARKET,
+            quantity=qty,
+            recvWindow=5000,
+        )
+
+    @staticmethod
+    def _exchange_fields(resp: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "exchange_order_id": resp.get("orderId"),
+            "exchange_status": resp.get("status"),
+            "executed_qty": resp.get("executedQty"),
+        }
+
+    def _is_binance_exc(self, exc: Exception) -> bool:
+        return isinstance(exc, (self._binance_api_error_cls, self._binance_request_error_cls, self._binance_order_error_cls))
+
+    def _handle_exchange_error(
+        self,
+        order_id: int,
+        chat_id: int,
+        event_type: str,
+        user_msg_prefix: str,
+        payload: Dict[str, Any],
+        exc: Exception,
+    ):
+        self._storage.update_order_status(order_id, "error")
+        self._storage.append_event(
+            event_type,
+            order_id,
+            {**payload, "error": str(exc), "error_type": type(exc).__name__},
+        )
+        msg_kind = "Errore esecuzione" if self._is_binance_exc(exc) else "Errore interno esecuzione"
+        self._queue_message(chat_id, f"{msg_kind} {user_msg_prefix}: {exc}")
+        if self._is_binance_exc(exc):
+            log.error("Errore Binance su ordine %s: %s", order_id, exc)
+        else:
+            log.exception("Errore inatteso su ordine %s", order_id)
+
     def _load_settings(self):
         tf = self._storage.get_setting("default_tf_minutes")
         tf_seconds = self._storage.get_setting("timeframe_seconds")
@@ -574,41 +623,65 @@ class TelegramTradingBot:
             self._storage.update_oco_leg_core_order_id(spec.order_id, leg_index, core_id)
 
     def _on_oco_leg_fired(self, order_id: int, leg_index: int, leg_spec: Dict[str, Any], price: float):
-        # idempotent: check status
-        # update fired leg
-        self._storage.update_oco_leg_status(order_id, leg_index, "filled")
-        self._storage.update_order_status(order_id, "filled")
-        self._storage.append_event("oco_leg_filled", order_id, {"leg_index": leg_index, "price": price})
+        oco_spec = None
+        for s in getattr(self, "_oco_orders", []):
+            if s.order_id == order_id:
+                oco_spec = s
+                break
+        if oco_spec is None or oco_spec.status != "active":
+            return
 
-        # cancel sibling legs and their engine core orders
+        leg_status = (leg_spec.get("status") or "waiting").lower()
+        if leg_status != "waiting":
+            return
+
+        symbol = self._exec_symbol(oco_spec.symbol, None)
+        leg_side = (leg_spec.get("side") or oco_spec.side).lower()
+        qty = float(leg_spec.get("qty") or 0.0)
+        if qty <= 0:
+            raise ValueError(f"Qty non valida per OCO leg {leg_index}: {qty}")
+
         try:
-            # get sibling legs from storage
-            data = self._storage.load_active_orders()
-            # find matching oco
-            for o in data.get("oco", []):
-                if o["order_id"] == order_id:
-                    for l in o.get("legs", []):
-                        if l["leg_index"] != leg_index:
-                            # mark sibling cancelled
-                            self._storage.update_oco_leg_status(order_id, l["leg_index"], "cancelled")
-                            core_id = l.get("core_order_id")
-                            if core_id:
-                                # cancel engine order if present
-                                self._manager.cancel_order(int(core_id))
-                                self._storage.append_event("oco_leg_cancelled", order_id, {"leg_index": l["leg_index"]})
-                    break
-        except Exception as e:
-            log.error(f"Errore nella gestione OCO fired cleanup: {e}")
-        # notify user (best-effort)
-        try:
-            # get chat_id from orders table via storage
-            # we don't have direct API; rely on restored in-memory list
-            for s in getattr(self, "_oco_orders", []):
-                if s.order_id == order_id:
-                    self._queue_message(s.chat_id, f"OCO {order_id} leg {leg_index} eseguita a {price}; sibling cancellato")
-                    break
-        except Exception:
-            pass
+            exchange_resp = self._execute_market_order_on_exchange(leg_side, symbol, qty)
+            leg_spec["status"] = "filled"
+            self._storage.update_oco_leg_status(order_id, leg_index, "filled")
+            self._storage.update_order_status(order_id, "filled")
+            self._storage.append_event(
+                "oco_leg_filled",
+                order_id,
+                {
+                    "leg_index": leg_index,
+                    "price": price,
+                    "exchange_symbol": symbol,
+                    **self._exchange_fields(exchange_resp),
+                },
+            )
+
+            for sibling in oco_spec.legs:
+                if sibling.get("leg_index") == leg_index:
+                    continue
+                sibling["status"] = "cancelled"
+                self._storage.update_oco_leg_status(order_id, sibling.get("leg_index"), "cancelled")
+                core_id = sibling.get("core_order_id")
+                if core_id:
+                    self._manager.cancel_order(int(core_id))
+                self._storage.append_event("oco_leg_cancelled", order_id, {"leg_index": sibling.get("leg_index")})
+
+            oco_spec.status = "filled"
+            self._queue_message(
+                oco_spec.chat_id,
+                f"OCO {order_id} leg {leg_index} eseguita su {symbol} qty={qty} a {price} (exchange orderId={exchange_resp.get('orderId')}); sibling cancellato",
+            )
+        except Exception as exc:
+            oco_spec.status = "error"
+            self._handle_exchange_error(
+                order_id=order_id,
+                chat_id=oco_spec.chat_id,
+                event_type="oco_leg_exchange_error",
+                user_msg_prefix=f"OCO {order_id} leg {leg_index} su {symbol}",
+                payload={"leg_index": leg_index, "price": price, "exchange_symbol": symbol, "qty": qty, "side": leg_side},
+                exc=exc,
+            )
 
     def _on_simple_fired(self, spec: SimpleOrderSpec, price: float):
         if spec.status != "active":
@@ -637,24 +710,24 @@ class TelegramTradingBot:
             )
         except (self._binance_api_error_cls, self._binance_request_error_cls, self._binance_order_error_cls) as exc:
             spec.status = "error"
-            self._storage.update_order_status(spec.order_id, "error")
-            self._storage.append_event(
-                "simple_exchange_error",
-                spec.order_id,
-                {"price": price, "exchange_symbol": symbol, "error": str(exc), "error_type": type(exc).__name__},
+            self._handle_exchange_error(
+                order_id=spec.order_id,
+                chat_id=spec.chat_id,
+                event_type="simple_exchange_error",
+                user_msg_prefix=f"{verb.lower()} {symbol}",
+                payload={"price": price, "exchange_symbol": symbol, "qty": spec.qty, "side": spec.side},
+                exc=exc,
             )
-            self._queue_message(spec.chat_id, f"Errore esecuzione {verb.lower()} {symbol}: {exc}")
-            log.error("Errore Binance su ordine semplice %s: %s", spec.order_id, exc)
         except Exception as exc:
             spec.status = "error"
-            self._storage.update_order_status(spec.order_id, "error")
-            self._storage.append_event(
-                "simple_exchange_error",
-                spec.order_id,
-                {"price": price, "exchange_symbol": symbol, "error": str(exc), "error_type": type(exc).__name__},
+            self._handle_exchange_error(
+                order_id=spec.order_id,
+                chat_id=spec.chat_id,
+                event_type="simple_exchange_error",
+                user_msg_prefix=f"{verb.lower()} {symbol}",
+                payload={"price": price, "exchange_symbol": symbol, "qty": spec.qty, "side": spec.side},
+                exc=exc,
             )
-            self._queue_message(spec.chat_id, f"Errore interno esecuzione {verb.lower()} {symbol}: {exc}")
-            log.exception("Errore inatteso su ordine semplice %s", spec.order_id)
 
     async def _start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -1685,47 +1758,70 @@ class TelegramTradingBot:
             trigger_hit = trigger_hit or (spec.op == ">" and spec.prev_price < spec.trigger and price > spec.trigger)
 
             if trigger_hit and not spec.bought:
-                spec.bought = True
-                spec.status = "filled"
-                self._storage.update_function_runtime(spec.order_id, spec.bought, price)
-                self._storage.update_order_status(spec.order_id, "filled")
-                self._storage.append_event("function_filled", spec.order_id, {"price": price})
                 exec_symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
-                self._queue_message(spec.chat_id, f"Function BUY scattato su watch={spec.symbol} exec={exec_symbol} a {price}")
+                try:
+                    exchange_resp = self._execute_market_order_on_exchange("buy", exec_symbol, spec.qty)
+                    spec.bought = True
+                    spec.status = "filled"
+                    self._storage.update_function_runtime(spec.order_id, spec.bought, price)
+                    self._storage.update_order_status(spec.order_id, "filled")
+                    self._storage.append_event(
+                        "function_filled",
+                        spec.order_id,
+                        {
+                            "price": price,
+                            "exchange_symbol": exec_symbol,
+                            **self._exchange_fields(exchange_resp),
+                        },
+                    )
+                    self._queue_message(
+                        spec.chat_id,
+                        f"Function BUY scattato su watch={spec.symbol} exec={exec_symbol} qty={spec.qty} a {price} (exchange orderId={exchange_resp.get('orderId')})",
+                    )
 
-                trailing_order_id = self._new_order_id()
-                sell_spec = TrailingSellSpec(
-                    order_id=trailing_order_id,
-                    symbol=spec.symbol,
-                    qty=spec.qty,
-                    percent=spec.percent,
-                    chat_id=spec.chat_id,
-                    limit=None,
-                    hook_symbol=spec.hook_symbol,
-                    tf_minutes=spec.tf_minutes,
-                    next_eval_at=self._next_boundary_epoch(spec.tf_minutes),
-                )
-                self._init_trailing_sell(sell_spec)
-                self._trailing_sell_orders.append(sell_spec)
-                self._storage.save_trailing_order(
-                    order_id=sell_spec.order_id,
-                    chat_id=sell_spec.chat_id,
-                    side="sell",
-                    symbol=sell_spec.symbol,
-                    qty=sell_spec.qty,
-                    percent=sell_spec.percent,
-                    limit_price=sell_spec.limit,
-                    hook_symbol=sell_spec.hook_symbol,
-                    armed=sell_spec.armed,
-                    max_price=sell_spec.max_price,
-                    min_price=None,
-                    arm_op=sell_spec.arm_op,
-                    tf_minutes=sell_spec.tf_minutes,
-                    next_eval_at=sell_spec.next_eval_at,
-                    last_eval_at=sell_spec.last_eval_at,
-                    status=sell_spec.status,
-                )
-                self._storage.append_event("trailing_sell_created_from_function", sell_spec.order_id)
+                    trailing_order_id = self._new_order_id()
+                    sell_spec = TrailingSellSpec(
+                        order_id=trailing_order_id,
+                        symbol=spec.symbol,
+                        qty=spec.qty,
+                        percent=spec.percent,
+                        chat_id=spec.chat_id,
+                        limit=None,
+                        hook_symbol=spec.hook_symbol,
+                        tf_minutes=spec.tf_minutes,
+                        next_eval_at=self._next_boundary_epoch(spec.tf_minutes),
+                    )
+                    self._init_trailing_sell(sell_spec)
+                    self._trailing_sell_orders.append(sell_spec)
+                    self._storage.save_trailing_order(
+                        order_id=sell_spec.order_id,
+                        chat_id=sell_spec.chat_id,
+                        side="sell",
+                        symbol=sell_spec.symbol,
+                        qty=sell_spec.qty,
+                        percent=sell_spec.percent,
+                        limit_price=sell_spec.limit,
+                        hook_symbol=sell_spec.hook_symbol,
+                        armed=sell_spec.armed,
+                        max_price=sell_spec.max_price,
+                        min_price=None,
+                        arm_op=sell_spec.arm_op,
+                        tf_minutes=sell_spec.tf_minutes,
+                        next_eval_at=sell_spec.next_eval_at,
+                        last_eval_at=sell_spec.last_eval_at,
+                        status=sell_spec.status,
+                    )
+                    self._storage.append_event("trailing_sell_created_from_function", sell_spec.order_id)
+                except Exception as exc:
+                    spec.status = "error"
+                    self._handle_exchange_error(
+                        order_id=spec.order_id,
+                        chat_id=spec.chat_id,
+                        event_type="function_exchange_error",
+                        user_msg_prefix=f"function buy {exec_symbol}",
+                        payload={"price": price, "exchange_symbol": exec_symbol, "qty": spec.qty, "side": "buy"},
+                        exc=exc,
+                    )
 
             spec.prev_price = price
             self._storage.update_function_runtime(spec.order_id, spec.bought, spec.prev_price)
@@ -1749,12 +1845,36 @@ class TelegramTradingBot:
                     spec.max_price = price
                 trigger_price = spec.max_price * (1.0 - (spec.percent / 100.0))
                 if price < trigger_price:
-                    spec.status = "filled"
-                    to_close.append(spec)
                     exec_symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
-                    self._queue_message(spec.chat_id, f"Trailing SELL eseguito su watch={spec.symbol} exec={exec_symbol} qty={spec.qty} a {price}")
-                    self._storage.update_order_status(spec.order_id, "filled")
-                    self._storage.append_event("trailing_sell_filled", spec.order_id, {"price": price})
+                    try:
+                        exchange_resp = self._execute_market_order_on_exchange("sell", exec_symbol, spec.qty)
+                        spec.status = "filled"
+                        to_close.append(spec)
+                        self._queue_message(
+                            spec.chat_id,
+                            f"Trailing SELL eseguito su watch={spec.symbol} exec={exec_symbol} qty={spec.qty} a {price} (exchange orderId={exchange_resp.get('orderId')})",
+                        )
+                        self._storage.update_order_status(spec.order_id, "filled")
+                        self._storage.append_event(
+                            "trailing_sell_filled",
+                            spec.order_id,
+                            {
+                                "price": price,
+                                "exchange_symbol": exec_symbol,
+                                **self._exchange_fields(exchange_resp),
+                            },
+                        )
+                    except Exception as exc:
+                        spec.status = "error"
+                        to_close.append(spec)
+                        self._handle_exchange_error(
+                            order_id=spec.order_id,
+                            chat_id=spec.chat_id,
+                            event_type="trailing_sell_exchange_error",
+                            user_msg_prefix=f"trailing sell {exec_symbol}",
+                            payload={"price": price, "exchange_symbol": exec_symbol, "qty": spec.qty, "side": "sell"},
+                            exc=exc,
+                        )
 
             self._storage.update_trailing_runtime(spec.order_id, spec.armed, spec.max_price, None, spec.arm_op)
 
@@ -1780,11 +1900,35 @@ class TelegramTradingBot:
                     spec.min_price = price
                 trigger_price = spec.min_price * (1.0 + (spec.percent / 100.0))
                 if price > trigger_price:
-                    spec.status = "filled"
-                    to_close.append(spec)
-                    self._queue_message(spec.chat_id, f"Trailing BUY eseguito su {spec.symbol} qty={spec.qty} a {price}")
-                    self._storage.update_order_status(spec.order_id, "filled")
-                    self._storage.append_event("trailing_buy_filled", spec.order_id, {"price": price})
+                    try:
+                        exchange_resp = self._execute_market_order_on_exchange("buy", spec.symbol, spec.qty)
+                        spec.status = "filled"
+                        to_close.append(spec)
+                        self._queue_message(
+                            spec.chat_id,
+                            f"Trailing BUY eseguito su {spec.symbol} qty={spec.qty} a {price} (exchange orderId={exchange_resp.get('orderId')})",
+                        )
+                        self._storage.update_order_status(spec.order_id, "filled")
+                        self._storage.append_event(
+                            "trailing_buy_filled",
+                            spec.order_id,
+                            {
+                                "price": price,
+                                "exchange_symbol": spec.symbol,
+                                **self._exchange_fields(exchange_resp),
+                            },
+                        )
+                    except Exception as exc:
+                        spec.status = "error"
+                        to_close.append(spec)
+                        self._handle_exchange_error(
+                            order_id=spec.order_id,
+                            chat_id=spec.chat_id,
+                            event_type="trailing_buy_exchange_error",
+                            user_msg_prefix=f"trailing buy {spec.symbol}",
+                            payload={"price": price, "exchange_symbol": spec.symbol, "qty": spec.qty, "side": "buy"},
+                            exc=exc,
+                        )
 
             self._storage.update_trailing_runtime(spec.order_id, spec.armed, None, spec.min_price, spec.arm_op)
 

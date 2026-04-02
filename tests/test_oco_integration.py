@@ -6,6 +6,15 @@ from telegram_bot import TelegramTradingBot, OcoSpec
 import sqlite3
 
 
+class FakeExchangeClient:
+    def create_order(self, **kwargs):
+        return {
+            "orderId": 123456,
+            "status": "FILLED",
+            "executedQty": str(kwargs.get("quantity")),
+        }
+
+
 def test_oco_end_to_end(tmp_path):
     db_path = str(tmp_path / "test_bot.sqlite3")
     archive_dir = str(tmp_path / "archive")
@@ -14,6 +23,7 @@ def test_oco_end_to_end(tmp_path):
     # Monkeypatch TelegramTradingBot to use MockPriceFeed by injecting into the module
     # Create bot but override feed after init
     bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    bot._exchange_client = FakeExchangeClient()
     # Replace feed and manager/poller with ones using MockPriceFeed
     mock_feed = MockPriceFeed(initial_price=100.0)
     bot._feed = mock_feed
