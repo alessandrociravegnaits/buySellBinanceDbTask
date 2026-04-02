@@ -566,6 +566,37 @@ class TelegramTradingBot:
         keyboard = [[KeyboardButton("Tutti ✅")], [KeyboardButton("Annulla")]]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
+    @staticmethod
+    def _post_fill_mode_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("Percentuale %"), KeyboardButton("Valore fisso")],
+            [KeyboardButton("Trailing %")],
+            [KeyboardButton("Annulla")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _parse_post_fill_mode_choice(normalized: str) -> Optional[str]:
+        if "percent" in normalized:
+            return "percent"
+        if "fisso" in normalized:
+            return "fixed"
+        if "trailing" in normalized:
+            return "trailing"
+        return None
+
+    @staticmethod
+    def _format_post_fill_value(mode: str, raw_text: str) -> str:
+        cleaned = raw_text.strip().replace("%", "")
+        value = float(cleaned)
+        if value <= 0:
+            raise ValueError("Valore deve essere > 0")
+        if mode == "percent":
+            return f"{value}%"
+        if mode == "trailing":
+            return f"trail:{value}%"
+        return str(value)
+
     async def _show_main_menu(self, update: Update, intro: Optional[str] = None):
         text = intro or "Menu principale: scegli un'azione."
         await self._send(update, text, reply_markup=self._main_menu_keyboard())
@@ -1279,8 +1310,8 @@ class TelegramTradingBot:
                 return True
             if state == "simple_post_fill_choice":
                 if normalized == "si":
-                    self._set_ui_state(context, "simple_post_fill_tp", draft)
-                    await self._send(update, "Inserisci TP (es: 3% oppure 72000)", reply_markup=self._cancel_keyboard())
+                    self._set_ui_state(context, "simple_post_fill_tp_mode", draft)
+                    await self._send(update, "Seleziona tipo TP", reply_markup=self._post_fill_mode_keyboard())
                     return True
                 if normalized == "no":
                     draft["post_fill_action"] = None
@@ -1289,15 +1320,52 @@ class TelegramTradingBot:
                     return True
                 await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
-            if state == "simple_post_fill_tp":
-                draft["post_fill_tp"] = text.strip()
-                self._set_ui_state(context, "simple_post_fill_sl", draft)
-                await self._send(update, "Inserisci SL (es: 1.5% oppure 65000 oppure trail:1.5%)", reply_markup=self._cancel_keyboard())
+            if state == "simple_post_fill_tp_mode":
+                mode = self._parse_post_fill_mode_choice(normalized)
+                if mode is None:
+                    await self._send(update, "Selezione non valida: scegli tipo TP", reply_markup=self._post_fill_mode_keyboard())
+                    return True
+                draft["post_fill_tp_mode"] = mode
+                self._set_ui_state(context, "simple_post_fill_tp_value", draft)
+                if mode == "percent":
+                    await self._send(update, "Inserisci TP percentuale (es: 3 oppure 3%)", reply_markup=self._cancel_keyboard())
+                elif mode == "trailing":
+                    await self._send(update, "Inserisci TP trailing percent (es: 1.5)", reply_markup=self._cancel_keyboard())
+                else:
+                    await self._send(update, "Inserisci TP fisso (es: 72000)", reply_markup=self._cancel_keyboard())
                 return True
-            if state == "simple_post_fill_sl":
-                draft["post_fill_action"] = self._build_post_fill_action_from_guided(draft["post_fill_tp"], text.strip())
+            if state == "simple_post_fill_tp_value":
+                mode = draft.get("post_fill_tp_mode")
+                draft["post_fill_tp"] = self._format_post_fill_value(str(mode), text)
+                self._set_ui_state(context, "simple_post_fill_sl_mode", draft)
+                await self._send(update, "Seleziona tipo SL", reply_markup=self._post_fill_mode_keyboard())
+                return True
+            if state == "simple_post_fill_sl_mode":
+                mode = self._parse_post_fill_mode_choice(normalized)
+                if mode is None:
+                    await self._send(update, "Selezione non valida: scegli tipo SL", reply_markup=self._post_fill_mode_keyboard())
+                    return True
+                draft["post_fill_sl_mode"] = mode
+                self._set_ui_state(context, "simple_post_fill_sl_value", draft)
+                if mode == "percent":
+                    await self._send(update, "Inserisci SL percentuale (es: 1.5 oppure 1.5%)", reply_markup=self._cancel_keyboard())
+                elif mode == "trailing":
+                    await self._send(update, "Inserisci SL trailing percent (es: 1.5)", reply_markup=self._cancel_keyboard())
+                else:
+                    await self._send(update, "Inserisci SL fisso (es: 65000)", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "simple_post_fill_sl_value":
+                mode = draft.get("post_fill_sl_mode")
+                sl_text = self._format_post_fill_value(str(mode), text)
+                draft["post_fill_action"] = self._build_post_fill_action_from_guided(draft["post_fill_tp"], sl_text)
                 self._set_ui_state(context, "simple_confirm", draft)
-                await self._send(update, f"Confermi ordine {draft['side']} su {draft['symbol']} con Auto OCO?", reply_markup=self._confirm_keyboard())
+                oco_token = self._post_fill_action_to_token(draft["post_fill_action"])
+                await self._send(
+                    update,
+                    f"Confermi ordine {draft['side']} su {draft['symbol']} con Auto OCO?\n"
+                    f"Dettagli: {oco_token}",
+                    reply_markup=self._confirm_keyboard(),
+                )
                 return True
             if state == "simple_confirm":
                 if normalized != "conferma":
@@ -1378,8 +1446,8 @@ class TelegramTradingBot:
                 return True
             if state == "function_post_fill_choice":
                 if normalized == "si":
-                    self._set_ui_state(context, "function_post_fill_tp", draft)
-                    await self._send(update, "Inserisci TP (es: 3% oppure 72000)", reply_markup=self._cancel_keyboard())
+                    self._set_ui_state(context, "function_post_fill_tp_mode", draft)
+                    await self._send(update, "Seleziona tipo TP", reply_markup=self._post_fill_mode_keyboard())
                     return True
                 if normalized == "no":
                     draft["post_fill_action"] = None
@@ -1388,15 +1456,52 @@ class TelegramTradingBot:
                     return True
                 await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
-            if state == "function_post_fill_tp":
-                draft["post_fill_tp"] = text.strip()
-                self._set_ui_state(context, "function_post_fill_sl", draft)
-                await self._send(update, "Inserisci SL (es: 1.5% oppure 65000 oppure trail:1.5%)", reply_markup=self._cancel_keyboard())
+            if state == "function_post_fill_tp_mode":
+                mode = self._parse_post_fill_mode_choice(normalized)
+                if mode is None:
+                    await self._send(update, "Selezione non valida: scegli tipo TP", reply_markup=self._post_fill_mode_keyboard())
+                    return True
+                draft["post_fill_tp_mode"] = mode
+                self._set_ui_state(context, "function_post_fill_tp_value", draft)
+                if mode == "percent":
+                    await self._send(update, "Inserisci TP percentuale (es: 3 oppure 3%)", reply_markup=self._cancel_keyboard())
+                elif mode == "trailing":
+                    await self._send(update, "Inserisci TP trailing percent (es: 1.5)", reply_markup=self._cancel_keyboard())
+                else:
+                    await self._send(update, "Inserisci TP fisso (es: 72000)", reply_markup=self._cancel_keyboard())
                 return True
-            if state == "function_post_fill_sl":
-                draft["post_fill_action"] = self._build_post_fill_action_from_guided(draft["post_fill_tp"], text.strip())
+            if state == "function_post_fill_tp_value":
+                mode = draft.get("post_fill_tp_mode")
+                draft["post_fill_tp"] = self._format_post_fill_value(str(mode), text)
+                self._set_ui_state(context, "function_post_fill_sl_mode", draft)
+                await self._send(update, "Seleziona tipo SL", reply_markup=self._post_fill_mode_keyboard())
+                return True
+            if state == "function_post_fill_sl_mode":
+                mode = self._parse_post_fill_mode_choice(normalized)
+                if mode is None:
+                    await self._send(update, "Selezione non valida: scegli tipo SL", reply_markup=self._post_fill_mode_keyboard())
+                    return True
+                draft["post_fill_sl_mode"] = mode
+                self._set_ui_state(context, "function_post_fill_sl_value", draft)
+                if mode == "percent":
+                    await self._send(update, "Inserisci SL percentuale (es: 1.5 oppure 1.5%)", reply_markup=self._cancel_keyboard())
+                elif mode == "trailing":
+                    await self._send(update, "Inserisci SL trailing percent (es: 1.5)", reply_markup=self._cancel_keyboard())
+                else:
+                    await self._send(update, "Inserisci SL fisso (es: 65000)", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "function_post_fill_sl_value":
+                mode = draft.get("post_fill_sl_mode")
+                sl_text = self._format_post_fill_value(str(mode), text)
+                draft["post_fill_action"] = self._build_post_fill_action_from_guided(draft["post_fill_tp"], sl_text)
                 self._set_ui_state(context, "function_confirm", draft)
-                await self._send(update, f"Confermi FUNCTION su {draft['symbol']} con Auto OCO?", reply_markup=self._confirm_keyboard())
+                oco_token = self._post_fill_action_to_token(draft["post_fill_action"])
+                await self._send(
+                    update,
+                    f"Confermi FUNCTION su {draft['symbol']} con Auto OCO?\n"
+                    f"Dettagli: {oco_token}",
+                    reply_markup=self._confirm_keyboard(),
+                )
                 return True
             if state == "function_confirm":
                 if normalized != "conferma":
@@ -1516,8 +1621,8 @@ class TelegramTradingBot:
                 return True
             if state == "tb_post_fill_choice":
                 if normalized == "si":
-                    self._set_ui_state(context, "tb_post_fill_tp", draft)
-                    await self._send(update, "Inserisci TP (es: 3% oppure 72000)", reply_markup=self._cancel_keyboard())
+                    self._set_ui_state(context, "tb_post_fill_tp_mode", draft)
+                    await self._send(update, "Seleziona tipo TP", reply_markup=self._post_fill_mode_keyboard())
                     return True
                 if normalized == "no":
                     draft["post_fill_action"] = None
@@ -1526,15 +1631,52 @@ class TelegramTradingBot:
                     return True
                 await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
-            if state == "tb_post_fill_tp":
-                draft["post_fill_tp"] = text.strip()
-                self._set_ui_state(context, "tb_post_fill_sl", draft)
-                await self._send(update, "Inserisci SL (es: 1.5% oppure 65000 oppure trail:1.5%)", reply_markup=self._cancel_keyboard())
+            if state == "tb_post_fill_tp_mode":
+                mode = self._parse_post_fill_mode_choice(normalized)
+                if mode is None:
+                    await self._send(update, "Selezione non valida: scegli tipo TP", reply_markup=self._post_fill_mode_keyboard())
+                    return True
+                draft["post_fill_tp_mode"] = mode
+                self._set_ui_state(context, "tb_post_fill_tp_value", draft)
+                if mode == "percent":
+                    await self._send(update, "Inserisci TP percentuale (es: 3 oppure 3%)", reply_markup=self._cancel_keyboard())
+                elif mode == "trailing":
+                    await self._send(update, "Inserisci TP trailing percent (es: 1.5)", reply_markup=self._cancel_keyboard())
+                else:
+                    await self._send(update, "Inserisci TP fisso (es: 72000)", reply_markup=self._cancel_keyboard())
                 return True
-            if state == "tb_post_fill_sl":
-                draft["post_fill_action"] = self._build_post_fill_action_from_guided(draft["post_fill_tp"], text.strip())
+            if state == "tb_post_fill_tp_value":
+                mode = draft.get("post_fill_tp_mode")
+                draft["post_fill_tp"] = self._format_post_fill_value(str(mode), text)
+                self._set_ui_state(context, "tb_post_fill_sl_mode", draft)
+                await self._send(update, "Seleziona tipo SL", reply_markup=self._post_fill_mode_keyboard())
+                return True
+            if state == "tb_post_fill_sl_mode":
+                mode = self._parse_post_fill_mode_choice(normalized)
+                if mode is None:
+                    await self._send(update, "Selezione non valida: scegli tipo SL", reply_markup=self._post_fill_mode_keyboard())
+                    return True
+                draft["post_fill_sl_mode"] = mode
+                self._set_ui_state(context, "tb_post_fill_sl_value", draft)
+                if mode == "percent":
+                    await self._send(update, "Inserisci SL percentuale (es: 1.5 oppure 1.5%)", reply_markup=self._cancel_keyboard())
+                elif mode == "trailing":
+                    await self._send(update, "Inserisci SL trailing percent (es: 1.5)", reply_markup=self._cancel_keyboard())
+                else:
+                    await self._send(update, "Inserisci SL fisso (es: 65000)", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "tb_post_fill_sl_value":
+                mode = draft.get("post_fill_sl_mode")
+                sl_text = self._format_post_fill_value(str(mode), text)
+                draft["post_fill_action"] = self._build_post_fill_action_from_guided(draft["post_fill_tp"], sl_text)
                 self._set_ui_state(context, "tb_confirm", draft)
-                await self._send(update, f"Confermi TRAILING BUY su {draft['symbol']} con Auto OCO?", reply_markup=self._confirm_keyboard())
+                oco_token = self._post_fill_action_to_token(draft["post_fill_action"])
+                await self._send(
+                    update,
+                    f"Confermi TRAILING BUY su {draft['symbol']} con Auto OCO?\n"
+                    f"Dettagli: {oco_token}",
+                    reply_markup=self._confirm_keyboard(),
+                )
                 return True
             if state == "tb_confirm":
                 if normalized != "conferma":
