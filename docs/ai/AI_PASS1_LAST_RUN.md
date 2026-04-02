@@ -4,7 +4,7 @@
 - Trigger used: `/pass1-migrazione`
 - Machine: current workspace host
 - Validation command: `python -m pytest -q`
-- Validation result: `2 passed, 4 warnings`
+ - Validation result: `2 passed, 4 warnings` (run: 2026-04-02T12:XX:00Z)
 - Updated files:
   - `docs/ai/AI_END_SESSION_CHECKLIST.md`
   - `docs/ai/AI_HANDOFF_CURRENT.md`
