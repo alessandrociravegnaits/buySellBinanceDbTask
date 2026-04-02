@@ -137,6 +137,40 @@ Comandi supportati (interfaccia Telegram):
 - `/info` (mostra guida comandi e, nella sezione "Valori correnti", i runtime settings)
 - `/t` `/a` `/e` `/s` `/b` `/f` `/S` `/B` `/c ORDER_ID` oppure `/c a` `/o`
 
+## Post-Fill Auto OCO (nuovo)
+
+Disponibile sugli ordini di ingresso:
+- `/b` (buy semplice)
+- `/f` (function buy)
+- `/B` (trailing buy)
+
+Puoi configurarlo in 2 modi:
+1. Tramite wizard guidato UI (senza scrivere token `oco:` a mano).
+2. Tramite comando con token opzionale `oco:`.
+
+Esempi comando:
+
+```text
+/b BTCUSDT < 67000 0.001 oco:tp=3%,sl=1.5%
+/b BTCUSDT < 67000 0.001 oco:tp=72000,sl=65000
+/b BTCUSDT < 67000 0.001 oco:tp=3%,sl=trail:1.5%
+```
+
+Formato supportato:
+- `tp`: `%`, valore fisso, oppure `trail:x%`
+- `sl`: `%`, valore fisso, oppure `trail:x%`
+
+Le due gambe sono indipendenti: puoi scegliere liberamente il mode per ciascuna leg.
+
+Comportamento:
+- all'esecuzione del buy, il bot crea automaticamente un OCO figlio,
+- ogni OCO figlio mantiene il riferimento al parent (`parent_order_id`),
+- in caso `sl=trail:x%`, la leg SL usa il motore trailing esistente con linkage OCO->Trailing.
+
+Visibilita runtime:
+- `/o` mostra `post_fill_action`, `parent` OCO, dettagli leg trailing/core linkage.
+- `/info` mostra il conteggio di trailing sell linked a OCO attivi.
+
 Nota: il comando `/info` ora mostra anche i valori correnti del bot (default TF, echo, alert, reference price e conteggi ordini attivi). Il comando `/c a` cancella gli ordini presenti nelle collezioni in memoria (sell/buy/function/trailing) ma non include automaticamente gli OCO a meno che non venga esplicitamente aggiornato.
 
 Timeframe ordini:

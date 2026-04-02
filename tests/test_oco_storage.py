@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import tempfile
+import json
 from storage import SQLiteStorage
 
 
@@ -51,5 +52,103 @@ def test_save_and_update_oco(tmp_path):
     r = cur.fetchone()
     assert r[0] == -101 and r[1] == "filled"
 
+    conn.close()
+    storage.close()
+
+
+def test_post_fill_action_persistence(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    storage = SQLiteStorage(db_path, archive_dir)
+
+    parent_id = storage.next_order_id()
+    post_fill_action = {
+        "type": "oco",
+        "tp": {"mode": "percent", "value": 3.0},
+        "sl": {"mode": "fixed", "value": 65000.0},
+    }
+    storage.save_simple_order(
+        order_id=parent_id,
+        chat_id=1,
+        side="buy",
+        symbol="BTCUSDT",
+        op="<",
+        trigger_value=67000.0,
+        qty=0.001,
+        hook_symbol=None,
+        core_order_id=parent_id,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        post_fill_action=post_fill_action,
+        status="active",
+    )
+
+    oco_id = storage.next_order_id()
+    storage.save_oco_order(
+        order_id=oco_id,
+        chat_id=1,
+        symbol="BTCUSDT",
+        side="sell",
+        legs=[{"leg_index": 1, "ordertype": "limit", "price": 70000.0, "qty": 0.001, "side": "sell"}],
+        hook_symbol=None,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        parent_order_id=parent_id,
+        status="active",
+    )
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT post_fill_action FROM order_simple WHERE order_id = ?", (parent_id,))
+    row = cur.fetchone()
+    assert row is not None
+    assert json.loads(row[0])["type"] == "oco"
+
+    cur.execute("SELECT parent_order_id FROM order_oco WHERE order_id = ?", (oco_id,))
+    oco_row = cur.fetchone()
+    assert oco_row is not None
+    assert oco_row[0] == parent_id
+
+    conn.close()
+    storage.close()
+
+
+def test_oco_trailing_leg_persistence(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    storage = SQLiteStorage(db_path, archive_dir)
+    order_id = storage.next_order_id()
+    legs = [
+        {"leg_index": 1, "ordertype": "limit", "price": 71000.0, "qty": 0.01, "side": "sell"},
+        {"leg_index": 2, "ordertype": "trailing", "trail_percent": 1.5, "qty": 0.01, "side": "sell"},
+    ]
+
+    storage.save_oco_order(
+        order_id=order_id,
+        chat_id=321,
+        symbol="BTCUSDT",
+        side="sell",
+        legs=legs,
+        hook_symbol=None,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        parent_order_id=99,
+        status="active",
+    )
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT ordertype, trail_percent FROM order_oco_leg WHERE order_id = ? AND leg_index = 2", (order_id,))
+    row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "trailing"
+    assert float(row[1]) == 1.5
     conn.close()
     storage.close()

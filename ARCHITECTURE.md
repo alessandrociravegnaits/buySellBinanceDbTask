@@ -1,5 +1,35 @@
 Ricevuto: creo un resoconto completo e puntuale sull'organizzazione dell'app.
 
+## Aggiornamento Architetturale: Post-Fill Auto OCO
+
+### Obiettivo
+Consentire ad alcuni ordini di ingresso (`/b`, `/f`, `/B`) di innescare automaticamente la creazione di un ordine OCO al momento del fill.
+
+### Modello Dati
+- `order_simple.post_fill_action` (`TEXT`, JSON)
+- `order_function.post_fill_action` (`TEXT`, JSON)
+- `order_trailing.post_fill_action` (`TEXT`, JSON)
+- `order_oco.parent_order_id` (`INTEGER`, riferimento logico ordine padre)
+- `order_oco_leg.trail_percent` (`REAL`, usato per leg trailing)
+- `order_trailing.oco_parent_order_id` / `order_trailing.oco_leg_index` (`INTEGER`, linkage runtime OCO<->Trailing)
+
+### Flusso Runtime
+1. Ordine ingresso viene eseguito su exchange.
+2. Se `post_fill_action` e presente, dispatcher crea un OCO figlio (`type=oco`).
+3. Leg TP: `limit` da `fixed` o `%`.
+4. Leg SL:
+  - `stop_limit` da `fixed` o `%`, oppure
+  - `trailing` con riuso motore trailing esistente (`sl=trail:x%`).
+5. Al fire di una leg OCO, il sibling viene cancellato (cancel-sibling) anche se il sibling e un trailing linked.
+
+### Osservabilita
+- Eventi principali: `post_fill_action_triggered`, `post_fill_action_failed`, `auto_oco_created`, `oco_leg_filled`, `oco_leg_cancelled`, `oco_trailing_leg_fired`.
+- `/o` mostra post-fill action e linkage parent/legs.
+- `/info` mostra conteggio trailing linked a OCO attivi.
+
+### UX
+La configurazione Auto OCO e disponibile anche via wizard guidato, senza obbligo di scrivere il token `oco:` manualmente.
+
 Piano sintetico
 - Raccogliere e descrivere i componenti principali del progetto (file, flussi, responsabilità).
 - Documentare il modello dati (tabelle SQLite proposte) e come vengono persistiti gli ordini, i trigger, i runtime e lo storico.
