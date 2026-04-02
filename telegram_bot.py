@@ -4,6 +4,7 @@ import logging
 import os
 import queue
 import time
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -299,18 +300,18 @@ class TelegramTradingBot:
     @staticmethod
     def _main_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
-            [KeyboardButton("Nuovo ordine"), KeyboardButton("Ordini attivi")],
-            [KeyboardButton("Impostazioni"), KeyboardButton("Info")],
+            [KeyboardButton("🆕 Nuovo ordine"), KeyboardButton("📋 Ordini attivi")],
+            [KeyboardButton("⚙️ Impostazioni"), KeyboardButton("ℹ️ Info")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @staticmethod
     def _orders_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
-            [KeyboardButton("Sell semplice"), KeyboardButton("Buy semplice")],
-            [KeyboardButton("Function"), KeyboardButton("Trailing Sell")],
-            [KeyboardButton("Trailing Buy")],
-            [KeyboardButton("OCO Order")],
+            [KeyboardButton("📉 Sell semplice"), KeyboardButton("📈 Buy semplice")],
+            [KeyboardButton("⚙️ Function"), KeyboardButton("📉 Trailing Sell")],
+            [KeyboardButton("📈 Trailing Buy")],
+            [KeyboardButton("🔗 OCO Order")],
             [KeyboardButton("← Indietro")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -318,20 +319,20 @@ class TelegramTradingBot:
     @staticmethod
     def _settings_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
-            [KeyboardButton("Timeframe"), KeyboardButton("Alert")],
-            [KeyboardButton("Echo"), KeyboardButton("Cancella ordine")],
+            [KeyboardButton("⏱️ Timeframe"), KeyboardButton("🚨 Alert")],
+            [KeyboardButton("🔊 Echo"), KeyboardButton("🗑️ Cancella ordine")],
             [KeyboardButton("← Indietro")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @staticmethod
     def _operator_keyboard() -> ReplyKeyboardMarkup:
-        keyboard = [[KeyboardButton("<"), KeyboardButton(">")], [KeyboardButton("Annulla")]]
+        keyboard = [[KeyboardButton("◀️"), KeyboardButton("▶️")], [KeyboardButton("Annulla")]]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @staticmethod
     def _yes_no_keyboard() -> ReplyKeyboardMarkup:
-        keyboard = [[KeyboardButton("Si"), KeyboardButton("No")], [KeyboardButton("Annulla")]]
+        keyboard = [[KeyboardButton("✅ Si"), KeyboardButton("❌ No")], [KeyboardButton("Annulla")]]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @staticmethod
@@ -350,12 +351,12 @@ class TelegramTradingBot:
 
     @staticmethod
     def _side_keyboard() -> ReplyKeyboardMarkup:
-        keyboard = [[KeyboardButton("buy"), KeyboardButton("sell")], [KeyboardButton("Annulla")]]
+        keyboard = [[KeyboardButton("⬆️ buy"), KeyboardButton("⬇️ sell")], [KeyboardButton("Annulla")]]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @staticmethod
     def _confirm_keyboard() -> ReplyKeyboardMarkup:
-        keyboard = [[KeyboardButton("Conferma"), KeyboardButton("Annulla")]]
+        keyboard = [[KeyboardButton("✅ Conferma"), KeyboardButton("Annulla")]]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @staticmethod
@@ -365,12 +366,12 @@ class TelegramTradingBot:
 
     @staticmethod
     def _echo_alert_keyboard() -> ReplyKeyboardMarkup:
-        keyboard = [[KeyboardButton("Abilita"), KeyboardButton("Disabilita")], [KeyboardButton("Annulla")]]
+        keyboard = [[KeyboardButton("Abilita ✅"), KeyboardButton("Disabilita ❌")], [KeyboardButton("Annulla")]]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @staticmethod
     def _cancel_order_keyboard() -> ReplyKeyboardMarkup:
-        keyboard = [[KeyboardButton("Tutti")], [KeyboardButton("Annulla")]]
+        keyboard = [[KeyboardButton("Tutti ✅")], [KeyboardButton("Annulla")]]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     async def _show_main_menu(self, update: Update, intro: Optional[str] = None):
@@ -405,6 +406,12 @@ class TelegramTradingBot:
             draft = {}
             context.user_data[UI_DRAFT_KEY] = draft
         return draft
+    @staticmethod
+    def _normalize_menu_text(text: str) -> str:
+        """Normalize menu text by stripping emojis/punctuation and normalizing whitespace."""
+        cleaned = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip().lower()
+        return cleaned
 
     def _queue_message(self, chat_id: int, text: str):
         self._notifications.put((chat_id, text))
@@ -619,7 +626,7 @@ class TelegramTradingBot:
             context.application.bot_data["last_chat_id"] = update.effective_chat.id
 
         text = (update.effective_message.text or "").strip()
-        lowered = text.lower()
+        lowered = self._normalize_menu_text(text)
 
         if lowered == "annulla":
             self._clear_ui_state(context)
@@ -631,12 +638,14 @@ class TelegramTradingBot:
             if handled:
                 return
 
-        if lowered in {"menu", "help"}:
+        # main menu shortcuts
+        tokens = set(lowered.split())
+        if lowered in {"menu", "help"} or "menu" in tokens or "help" in tokens:
             await self._show_main_menu(update)
             return
-        if lowered == "info":
+        # robust Info match: check tokens so 'ℹ️ Info' or 'info ℹ️' both match
+        if "info" in tokens or lowered == "info":
             await self._info(update, context)
-            return
             return
 
         if lowered == "nuovo ordine":
@@ -648,7 +657,7 @@ class TelegramTradingBot:
         if lowered == "impostazioni":
             await self._show_settings_menu(update)
             return
-        if lowered == "← indietro":
+        if lowered == "indietro":
             await self._show_main_menu(update)
             return
 
@@ -672,11 +681,10 @@ class TelegramTradingBot:
             self._set_ui_state(context, "tb_symbol", {"kind": "trailing_buy"})
             await self._send(update, "TRAILING BUY: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
             return
-        if lowered == "oco order" or lowered == "oco":
+        if lowered in {"oco", "oco order"}:
             self._set_ui_state(context, "oco_symbol", {"kind": "oco"})
             await self._send(update, "OCO: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
             return
-
         if lowered == "timeframe":
             self._set_ui_state(context, "set_timeframe", {})
             await self._send(update, "Seleziona timeframe di default", reply_markup=self._tf_keyboard())
@@ -700,6 +708,7 @@ class TelegramTradingBot:
             return False
         draft = self._get_draft(context)
         lowered = text.lower()
+        normalized = self._normalize_menu_text(text)
 
         try:
             if state == "simple_symbol":
@@ -1092,20 +1101,20 @@ class TelegramTradingBot:
                 await self._show_settings_menu(update)
                 return True
             if state == "set_echo":
-                if lowered not in {"abilita", "disabilita"}:
+                if normalized not in {"abilita", "disabilita"}:
                     await self._send(update, "Scegli Abilita o Disabilita", reply_markup=self._echo_alert_keyboard())
                     return True
-                await self._cmd_e(update, ["/e", "1" if lowered == "abilita" else "0"])
+                await self._cmd_e(update, ["/e", "1" if normalized == "abilita" else "0"])
                 self._clear_ui_state(context)
                 await self._show_settings_menu(update)
                 return True
             if state == "set_alert_mode":
-                if lowered == "disabilita":
+                if normalized == "disabilita":
                     await self._cmd_a(update, ["/a", "0"])
                     self._clear_ui_state(context)
                     await self._show_settings_menu(update)
                     return True
-                if lowered == "abilita":
+                if normalized == "abilita":
                     self._set_ui_state(context, "set_alert_percent", draft)
                     await self._send(update, "Inserisci percentuale alert (es. 2.0)", reply_markup=self._cancel_keyboard())
                     return True
@@ -1118,7 +1127,7 @@ class TelegramTradingBot:
                 await self._show_settings_menu(update)
                 return True
             if state == "cancel_order":
-                if lowered == "tutti":
+                if normalized == "tutti":
                     await self._cmd_c(update, ["/c", "a"])
                     self._clear_ui_state(context)
                     await self._show_settings_menu(update)

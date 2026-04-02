@@ -70,18 +70,18 @@ def on_chat_message(message):
         command = message['text']
 
         if command == '/info':
-            bot.sendMessage(ID, '*/s*:  __Vende asset__  /s  btcusdt \\>o\\< ValTrigger  Quantità @pairhook\n'
-                                '*/b*:  __Compra asset__ /b btcusdt \\>o\\< ValTrigger  Quantità @pairhook\n'
-                                '*/s*:  __Vende asset__ /s btcusdt \\>o\\< ValTrigger  Quantità @pairhook\n'
-                                '*/f*:  __Compra asset e rivende in trailing__ /f btcusdt \\>o\\< ValTrigger Quantita  Val%\n'
-                                '*/S*:  __Vende asset in trailing__  /S  btcusdt Val%  Quantità  Limit @pairhook\n'
-                                'Se viene inserita la pairhook ,verra venduta quella\n'
-                                '*/B*:  __Compra asset in trailing__ /B btcusdt Val%  Quantità Limit\n'
-                                '*/t*:  __Time frame__ /t tfValue 1,5,10,15,30,60,240 min\n'
-                                '*/o*:  Lista ordini /o\n'
-                                '*/a*:  alert di btc per variazioni rapide /a 0  1  %variazione \n'
-                                '*/e*:  echo, visualizza a video /e 0 o 1   \n'
-                                '*/c*:  Cancella ordine /c \\(s o S opp b o B opp f\\)  ,\\#,a \\=all\n',
+            bot.sendMessage(ID, 'ℹ️ *Comandi disponibili*\n\n'
+                                '*/s*:  __Vende asset__  /s  btcusdt \\>o\\< ValTrigger  Quantità @pairhook  📉\n'
+                                '*/b*:  __Compra asset__ /b btcusdt \\>o\\< ValTrigger  Quantità @pairhook  📈\n'
+                                '*/f*:  __Compra asset e rivende in trailing__ /f btcusdt \\>o\\< ValTrigger Quantita  Val% ⚙️\n'
+                                '*/S*:  __Vende asset in trailing__  /S  btcusdt Val%  Quantità  Limit @pairhook 📉\n'
+                                'Se viene inserita la pairhook, verrà venduta quella\n'
+                                '*/B*:  __Compra asset in trailing__ /B btcusdt Val%  Quantità Limit 📈\n'
+                                '*/t*:  __Time frame__ /t tfValue 1,5,10,15,30,60,240 min ⏱️\n'
+                                '*/o*:  Lista ordini /o 📋\n'
+                                '*/a*:  alert di btc per variazioni rapide /a 0  1  %variazione 🚨\n'
+                                '*/e*:  echo, visualizza a video /e 0 o 1 🔊   \n'
+                                '*/c*:  Cancella ordine /c \\(s o S opp b o B opp f\\)  ,\\#,a \\=all 🗑️\n',
                             parse_mode='MarkdownV2')  # a=all s=sell,b=buy
 
         if command[0:2] == '/t':  # sell    /s axsbusd <o> valoreTrigger quantita'

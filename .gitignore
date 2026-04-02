@@ -26,4 +26,4 @@ data/archive/
 # OS
 .DS_Store
 Thumbs.db
-
+mcp.json
