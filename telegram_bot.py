@@ -561,10 +561,49 @@ class TelegramTradingBot:
         keyboard = [[KeyboardButton("Abilita ✅"), KeyboardButton("Disabilita ❌")], [KeyboardButton("Annulla")]]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
-    @staticmethod
-    def _cancel_order_keyboard() -> ReplyKeyboardMarkup:
-        keyboard = [[KeyboardButton("Tutti ✅")], [KeyboardButton("Annulla")]]
+    def _cancel_order_targets(self) -> List[Tuple[int, str]]:
+        targets: List[Tuple[int, str]] = []
+
+        for spec in self._sell_orders:
+            if spec.status == "active":
+                targets.append((spec.order_id, f"#{spec.order_id}:{spec.symbol}:sell"))
+        for spec in self._buy_orders:
+            if spec.status == "active":
+                targets.append((spec.order_id, f"#{spec.order_id}:{spec.symbol}:buy"))
+        for spec in self._function_orders:
+            if spec.status == "active":
+                targets.append((spec.order_id, f"#{spec.order_id}:{spec.symbol}:function"))
+        for spec in self._trailing_sell_orders:
+            if spec.status == "active":
+                targets.append((spec.order_id, f"#{spec.order_id}:{spec.symbol}:ts"))
+        for spec in self._trailing_buy_orders:
+            if spec.status == "active":
+                targets.append((spec.order_id, f"#{spec.order_id}:{spec.symbol}:tb"))
+        for spec in getattr(self, "_oco_orders", []):
+            if spec.status == "active":
+                targets.append((spec.order_id, f"#{spec.order_id}:{spec.symbol}:oco"))
+
+        targets.sort(key=lambda x: x[0])
+        return targets
+
+    def _cancel_order_keyboard(self, max_buttons: int = 12) -> ReplyKeyboardMarkup:
+        keyboard: List[List[KeyboardButton]] = []
+        labels = [label for _, label in self._cancel_order_targets()[:max_buttons]]
+        for i in range(0, len(labels), 2):
+            row_labels = labels[i:i + 2]
+            keyboard.append([KeyboardButton(lbl) for lbl in row_labels])
+        keyboard.append([KeyboardButton("Tutti ✅")])
+        keyboard.append([KeyboardButton("Annulla")])
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _extract_order_id_from_cancel_input(text: str) -> str:
+        value = text.strip()
+        if value.startswith("#") and ":" in value:
+            candidate = value[1:].split(":", 1)[0].strip()
+            if candidate:
+                return candidate
+        return value
 
     @staticmethod
     def _post_fill_mode_keyboard() -> ReplyKeyboardMarkup:
@@ -1235,7 +1274,11 @@ class TelegramTradingBot:
             return
         if lowered == "cancella ordine":
             self._set_ui_state(context, "cancel_order", {})
-            await self._send(update, "Inserisci order_id oppure scegli Tutti", reply_markup=self._cancel_order_keyboard())
+            await self._send(
+                update,
+                "Seleziona ordine (#id:pair:tipo), inserisci order_id manuale oppure scegli Tutti",
+                reply_markup=self._cancel_order_keyboard(),
+            )
             return
 
     async def _handle_guided_flow(self, update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
@@ -1868,7 +1911,8 @@ class TelegramTradingBot:
                     self._clear_ui_state(context)
                     await self._show_settings_menu(update)
                     return True
-                await self._cmd_c(update, ["/c", text])
+                target = self._extract_order_id_from_cancel_input(text)
+                await self._cmd_c(update, ["/c", target])
                 self._clear_ui_state(context)
                 await self._show_settings_menu(update)
                 return True
@@ -2213,28 +2257,40 @@ class TelegramTradingBot:
             sl = spec.get("sl") or {}
             return f"oco(tp={tp.get('mode')}:{tp.get('value')},sl={sl.get('mode')}:{sl.get('value')})"
 
-        lines = ["Ordini registrati (order_id):"]
+        lines = ["Ordini attivi (order_id):"]
         lines.append("SELL:")
         for s in self._sell_orders:
+            if s.status != "active":
+                continue
             lines.append(f"{s.order_id} watch={s.symbol} exec={self._exec_symbol(s.symbol, s.hook_symbol)} {s.op} {s.trigger} qty={s.qty} tf={s.tf_minutes}m next={s.next_eval_at} post_fill={_post_fill_label(s.post_fill_action)} status={s.status}")
         lines.append("BUY:")
         for b in self._buy_orders:
+            if b.status != "active":
+                continue
             lines.append(f"{b.order_id} watch={b.symbol} exec={self._exec_symbol(b.symbol, b.hook_symbol)} {b.op} {b.trigger} qty={b.qty} tf={b.tf_minutes}m next={b.next_eval_at} post_fill={_post_fill_label(b.post_fill_action)} status={b.status}")
         lines.append("FUNCTION:")
         for f in self._function_orders:
+            if f.status != "active":
+                continue
             lines.append(f"{f.order_id} watch={f.symbol} exec={self._exec_symbol(f.symbol, f.hook_symbol)} {f.op} {f.trigger} qty={f.qty} pct={f.percent} tf={f.tf_minutes}m next={f.next_eval_at} post_fill={_post_fill_label(f.post_fill_action)} status={f.status}")
         lines.append("TRAILING SELL:")
         for t in self._trailing_sell_orders:
+            if t.status != "active":
+                continue
             linked = ""
             if t.oco_parent_order_id is not None and t.oco_leg_index is not None:
                 linked = f" linked_oco={t.oco_parent_order_id}/leg{t.oco_leg_index}"
             lines.append(f"{t.order_id} watch={t.symbol} exec={self._exec_symbol(t.symbol, t.hook_symbol)} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={t.next_eval_at} post_fill={_post_fill_label(t.post_fill_action)}{linked} status={t.status}")
         lines.append("TRAILING BUY:")
         for t in self._trailing_buy_orders:
+            if t.status != "active":
+                continue
             lines.append(f"{t.order_id} {t.symbol} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={t.next_eval_at} post_fill={_post_fill_label(t.post_fill_action)} status={t.status}")
         # OCO orders
         lines.append("OCO:")
         for o in getattr(self, "_oco_orders", []):
+            if o.status != "active":
+                continue
             try:
                 legs_text = []
                 for l in o.legs:

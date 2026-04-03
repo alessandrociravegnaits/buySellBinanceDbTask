@@ -137,6 +137,8 @@ Comandi supportati (interfaccia Telegram):
 - `/info` (mostra guida comandi e, nella sezione "Valori correnti", i runtime settings)
 - `/t` `/a` `/e` `/s` `/b` `/f` `/S` `/B` `/c ORDER_ID` oppure `/c a` `/o`
 
+Nel menu `Impostazioni -> Cancella ordine` puoi ora toccare direttamente i bottoni sintetici `#id:pair:tipo` (es. `#42:BTCUSDT:buy`) senza digitare l'ID a mano.
+
 ## Post-Fill Auto OCO (nuovo)
 
 Disponibile sugli ordini di ingresso:
@@ -171,7 +173,7 @@ Visibilita runtime:
 - `/o` mostra `post_fill_action`, `parent` OCO, dettagli leg trailing/core linkage.
 - `/info` mostra il conteggio di trailing sell linked a OCO attivi.
 
-Nota: il comando `/info` ora mostra anche i valori correnti del bot (default TF, echo, alert, reference price e conteggi ordini attivi). Il comando `/c a` cancella gli ordini presenti nelle collezioni in memoria (sell/buy/function/trailing) ma non include automaticamente gli OCO a meno che non venga esplicitamente aggiornato.
+Nota: il comando `/info` ora mostra anche i valori correnti del bot (default TF, echo, alert, reference price e conteggi ordini attivi). Il comando `/c a` cancella tutti gli ordini attivi presenti nelle collezioni in memoria, inclusi gli OCO.
 
 Timeframe ordini:
 - Valori ammessi: `1,5,15,30,60,120,240,1440` (minuti)
