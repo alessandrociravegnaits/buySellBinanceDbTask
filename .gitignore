@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 # Virtualenv / build
+.venv/
 venv/
 env/
 build/
@@ -27,3 +28,12 @@ data/archive/
 .DS_Store
 Thumbs.db
 mcp.json
+
+# Tool caches and editor artifacts
+.pytest_cache/
+.mypy_cache/
+.coverage
+.cache/
+__pypackages__/
+.ropeproject/
+.ipynb_checkpoints/

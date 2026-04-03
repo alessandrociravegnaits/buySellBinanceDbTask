@@ -15,6 +15,7 @@
   - Simple order execution now calls Binance Spot `create_order` MARKET.
   - Exchange errors are logged and user is notified.
   - Added command-driven cross-machine migration kit (`/pass1-migrazione`).
+  - PASS1 migration executed: tests passed and handoff/checklist updated. See `docs/ai/AI_PASS1_LAST_RUN.md` for details.
 - Watch points:
   - Requires `BINANCE_API_KEY` and `BINANCE_SECRET_KEY`.
   - Runtime may fail at startup if env/token config is missing.

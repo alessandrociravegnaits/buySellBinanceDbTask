@@ -137,7 +137,43 @@ Comandi supportati (interfaccia Telegram):
 - `/info` (mostra guida comandi e, nella sezione "Valori correnti", i runtime settings)
 - `/t` `/a` `/e` `/s` `/b` `/f` `/S` `/B` `/c ORDER_ID` oppure `/c a` `/o`
 
-Nota: il comando `/info` ora mostra anche i valori correnti del bot (default TF, echo, alert, reference price e conteggi ordini attivi). Il comando `/c a` cancella gli ordini presenti nelle collezioni in memoria (sell/buy/function/trailing) ma non include automaticamente gli OCO a meno che non venga esplicitamente aggiornato.
+Nel menu `Impostazioni -> Cancella ordine` puoi ora toccare direttamente i bottoni sintetici `#id:pair:tipo` (es. `#42:BTCUSDT:buy`) senza digitare l'ID a mano.
+
+## Post-Fill Auto OCO (nuovo)
+
+Disponibile sugli ordini di ingresso:
+- `/b` (buy semplice)
+- `/f` (function buy)
+- `/B` (trailing buy)
+
+Puoi configurarlo in 2 modi:
+1. Tramite wizard guidato UI (senza scrivere token `oco:` a mano).
+2. Tramite comando con token opzionale `oco:`.
+
+Esempi comando:
+
+```text
+/b BTCUSDT < 67000 0.001 oco:tp=3%,sl=1.5%
+/b BTCUSDT < 67000 0.001 oco:tp=72000,sl=65000
+/b BTCUSDT < 67000 0.001 oco:tp=3%,sl=trail:1.5%
+```
+
+Formato supportato:
+- `tp`: `%`, valore fisso, oppure `trail:x%`
+- `sl`: `%`, valore fisso, oppure `trail:x%`
+
+Le due gambe sono indipendenti: puoi scegliere liberamente il mode per ciascuna leg.
+
+Comportamento:
+- all'esecuzione del buy, il bot crea automaticamente un OCO figlio,
+- ogni OCO figlio mantiene il riferimento al parent (`parent_order_id`),
+- in caso `sl=trail:x%`, la leg SL usa il motore trailing esistente con linkage OCO->Trailing.
+
+Visibilita runtime:
+- `/o` mostra `post_fill_action`, `parent` OCO, dettagli leg trailing/core linkage.
+- `/info` mostra il conteggio di trailing sell linked a OCO attivi.
+
+Nota: il comando `/info` ora mostra anche i valori correnti del bot (default TF, echo, alert, reference price e conteggi ordini attivi). Il comando `/c a` cancella tutti gli ordini attivi presenti nelle collezioni in memoria, inclusi gli OCO.
 
 Timeframe ordini:
 - Valori ammessi: `1,5,15,30,60,120,240,1440` (minuti)
@@ -172,4 +208,58 @@ from price_feeds import Binance1mClosePriceFeed
 feed = Binance1mClosePriceFeed(round_digits=8)
 manager, poller = build_engine(symbols=["BTCUSDT"], price_feed=feed)
 ```
+
+## Porting / Migrazione su altra macchina
+
+Se vuoi spostare il progetto su un'altra macchina (oppure consegnarlo a un collega o a un'IA che non ha eseguito il lavoro), segui questi passi minimi per garantire che il nuovo ambiente abbia piena conoscenza del contesto e possa continuare lo sviluppo:
+
+- Clona il repository nella nuova macchina.
+- Crea e attiva un ambiente virtuale e installa le dipendenze:
+
+```powershell
+python -m venv .venv
+. .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+- Crea un file `.env` nella root con almeno le seguenti variabili (NON committare `.env`):
+
+```
+BOT_TOKEN=your_telegram_bot_token
+BINANCE_API_KEY=your_binance_api_key
+BINANCE_SECRET_KEY=your_binance_secret_key
+AUTHORIZED_CHAT_ID=123456789  # opzionale
+BOT_DB_PATH=data/bot.sqlite3   # opzionale
+```
+
+- Database:
+	- Il motore applica `CREATE TABLE IF NOT EXISTS` all'avvio, quindi le nuove tabelle verranno create automaticamente al primo run.
+	- Per preservare lo storico e lo stato runtime, copia `data/bot.sqlite3` dalla macchina sorgente nella stessa posizione sul nuovo host (o imposta `BOT_DB_PATH`).
+	- Esempio copia file (PowerShell):
+
+```powershell
+Copy-Item -Path "C:\path\to\project\data\bot.sqlite3" -Destination "C:\path\to\new\project\data\bot.sqlite3"
+```
+
+- Test rapidi (consigliato): esegui la suite di test prima di avviare il bot:
+
+```powershell
+python -m pytest -q -s
+```
+
+- Avvio:
+
+```powershell
+python main.py
+```
+
+- Branch di handoff: per creare un branch di consegna usa `git checkout -b pass1-migrazione`, committa le modifiche locali e pushale su remote per aprire una PR.
+
+- Punti di ingresso per continuare il lavoro:
+	- `telegram_bot.py` — interfaccia, wizard e dispatcher `post_fill_action`.
+	- `storage.py` — schema SQLite, metodi `save_oco_order`, `update_oco_leg_core_order_id`, `update_oco_leg_status`.
+	- `core.py` — motore, mapping core_order_id ↔ `order_oco_leg`.
+	- `tests/` — test di integrazione e storage (`test_oco_integration.py`, `test_oco_storage.py`).
+
+Se preferisci, posso generare uno script di esportazione/import per `data/bot.sqlite3` e un `docs/HANDOFF.md` con checklist e comandi rapidi; dimmi se lo vuoi ora.
 

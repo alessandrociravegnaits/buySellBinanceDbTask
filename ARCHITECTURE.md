@@ -1,5 +1,35 @@
 Ricevuto: creo un resoconto completo e puntuale sull'organizzazione dell'app.
 
+## Aggiornamento Architetturale: Post-Fill Auto OCO
+
+### Obiettivo
+Consentire ad alcuni ordini di ingresso (`/b`, `/f`, `/B`) di innescare automaticamente la creazione di un ordine OCO al momento del fill.
+
+### Modello Dati
+- `order_simple.post_fill_action` (`TEXT`, JSON)
+- `order_function.post_fill_action` (`TEXT`, JSON)
+- `order_trailing.post_fill_action` (`TEXT`, JSON)
+- `order_oco.parent_order_id` (`INTEGER`, riferimento logico ordine padre)
+- `order_oco_leg.trail_percent` (`REAL`, usato per leg trailing)
+- `order_trailing.oco_parent_order_id` / `order_trailing.oco_leg_index` (`INTEGER`, linkage runtime OCO<->Trailing)
+
+### Flusso Runtime
+1. Ordine ingresso viene eseguito su exchange.
+2. Se `post_fill_action` e presente, dispatcher crea un OCO figlio (`type=oco`).
+3. Leg TP: `limit` da `fixed` o `%`.
+4. Leg SL:
+  - `stop_limit` da `fixed` o `%`, oppure
+  - `trailing` con riuso motore trailing esistente (`sl=trail:x%`).
+5. Al fire di una leg OCO, il sibling viene cancellato (cancel-sibling) anche se il sibling e un trailing linked.
+
+### Osservabilita
+- Eventi principali: `post_fill_action_triggered`, `post_fill_action_failed`, `auto_oco_created`, `oco_leg_filled`, `oco_leg_cancelled`, `oco_trailing_leg_fired`.
+- `/o` mostra post-fill action e linkage parent/legs.
+- `/info` mostra conteggio trailing linked a OCO attivi.
+
+### UX
+La configurazione Auto OCO e disponibile anche via wizard guidato, senza obbligo di scrivere il token `oco:` manualmente.
+
 Piano sintetico
 - Raccogliere e descrivere i componenti principali del progetto (file, flussi, responsabilità).
 - Documentare il modello dati (tabelle SQLite proposte) e come vengono persistiti gli ordini, i trigger, i runtime e lo storico.
@@ -241,6 +271,30 @@ Se vuoi, procedo subito a:
 - implementare lo schema SQL in `storage.py` e fare la creazione automatica del DB,
 - aggiornare `requirements.txt` e `.gitignore`,
 - estrarre e documentare le chiamate `price_feeds` necessarie per ottenere il close price allineato.
+
+## Stato attuale (2026-04-03)
+
+Breve sintesi dello stato del progetto dopo l'ultima serie di modifiche:
+
+- Funzionalità completate:
+  - Creazione automatica di OCO figlie al fill di buy (`post_fill_action`), con supporto per TP/SL indipendenti.
+  - Supporto per TP/SL in modalità `fixed`, `%` e `trail:x%` (trailing leg crea un `order_trailing` e viene linkata via `order_trailing.oco_parent_order_id`).
+  - Persistenza: nuove colonne/table aggiunte e migrate via `CREATE TABLE IF NOT EXISTS` in `SQLiteStorage`.
+  - Runtime: linkage OCO ↔ core orders (`order_oco_leg.core_order_id`), cancel-sibling che annulla anche trailing linked.
+  - UI: wizard guidato per configurare `post_fill_action` senza scrivere token `oco:` manualmente.
+  - Test: test di integrazione e storage aggiornati; test suite locale passata.
+
+- File principali toccati:
+  - `telegram_bot.py` — parsing, wizard, `_create_auto_oco_from_post_fill`, `_attach_oco_to_engine`, finalizzazione OCO.
+  - `storage.py` — migrazioni schema, persistenza `order_oco`, `order_oco_leg`, `order_trailing` linkage.
+  - `tests/test_oco_integration.py`, `tests/test_oco_storage.py`, `tests/test_post_fill_action.py` — nuovi test e adattamenti.
+
+- Note operative per chi riceve il progetto:
+  - Il DB `data/bot.sqlite3` è l'autorità per mapping core_id ↔ leg; se copi il DB preservi lo stato runtime.
+  - Il codice usa `CREATE TABLE IF NOT EXISTS` per compatibilità di migrazioni semplici; verificare i log di avvio per eventuali WARN/ERROR.
+  - Per continuare lo sviluppo, aprire un branch (es. `pass1-migrazione`) e lavorare sulle issue/documentazione da `ARCHITECTURE.md` e `README.md`.
+
+Se vuoi che prepari un file `docs/HANDOFF.md` contenente checklist esatta, comandi `git` e snippet di export/import DB, lo creo subito.
 
 Dimmi quali passi vuoi che esegua adesso: procedo ad applicare modifiche al codice e creare i file necessari (DB schema, .gitignore, requirements aggiornato) oppure preferisci prima che generi test/unit?
 
