@@ -2257,22 +2257,30 @@ class TelegramTradingBot:
             sl = spec.get("sl") or {}
             return f"oco(tp={tp.get('mode')}:{tp.get('value')},sl={sl.get('mode')}:{sl.get('value')})"
 
+        def _human_time(ts: Optional[int]) -> str:
+            if ts is None:
+                return "-"
+            try:
+                return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(ts)))
+            except Exception:
+                return str(ts)
+
         lines = ["Ordini attivi (order_id):"]
         lines.append("SELL:")
         for s in self._sell_orders:
             if s.status != "active":
                 continue
-            lines.append(f"{s.order_id} watch={s.symbol} exec={self._exec_symbol(s.symbol, s.hook_symbol)} {s.op} {s.trigger} qty={s.qty} tf={s.tf_minutes}m next={s.next_eval_at} post_fill={_post_fill_label(s.post_fill_action)} status={s.status}")
+            lines.append(f"{s.order_id} watch={s.symbol} exec={self._exec_symbol(s.symbol, s.hook_symbol)} {s.op} {s.trigger} qty={s.qty} tf={s.tf_minutes}m next={_human_time(s.next_eval_at)} post_fill={_post_fill_label(s.post_fill_action)} status={s.status}")
         lines.append("BUY:")
         for b in self._buy_orders:
             if b.status != "active":
                 continue
-            lines.append(f"{b.order_id} watch={b.symbol} exec={self._exec_symbol(b.symbol, b.hook_symbol)} {b.op} {b.trigger} qty={b.qty} tf={b.tf_minutes}m next={b.next_eval_at} post_fill={_post_fill_label(b.post_fill_action)} status={b.status}")
+            lines.append(f"{b.order_id} watch={b.symbol} exec={self._exec_symbol(b.symbol, b.hook_symbol)} {b.op} {b.trigger} qty={b.qty} tf={b.tf_minutes}m next={_human_time(b.next_eval_at)} post_fill={_post_fill_label(b.post_fill_action)} status={b.status}")
         lines.append("FUNCTION:")
         for f in self._function_orders:
             if f.status != "active":
                 continue
-            lines.append(f"{f.order_id} watch={f.symbol} exec={self._exec_symbol(f.symbol, f.hook_symbol)} {f.op} {f.trigger} qty={f.qty} pct={f.percent} tf={f.tf_minutes}m next={f.next_eval_at} post_fill={_post_fill_label(f.post_fill_action)} status={f.status}")
+            lines.append(f"{f.order_id} watch={f.symbol} exec={self._exec_symbol(f.symbol, f.hook_symbol)} {f.op} {f.trigger} qty={f.qty} pct={f.percent} tf={f.tf_minutes}m next={_human_time(f.next_eval_at)} post_fill={_post_fill_label(f.post_fill_action)} status={f.status}")
         lines.append("TRAILING SELL:")
         for t in self._trailing_sell_orders:
             if t.status != "active":
@@ -2280,12 +2288,12 @@ class TelegramTradingBot:
             linked = ""
             if t.oco_parent_order_id is not None and t.oco_leg_index is not None:
                 linked = f" linked_oco={t.oco_parent_order_id}/leg{t.oco_leg_index}"
-            lines.append(f"{t.order_id} watch={t.symbol} exec={self._exec_symbol(t.symbol, t.hook_symbol)} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={t.next_eval_at} post_fill={_post_fill_label(t.post_fill_action)}{linked} status={t.status}")
+            lines.append(f"{t.order_id} watch={t.symbol} exec={self._exec_symbol(t.symbol, t.hook_symbol)} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={_human_time(t.next_eval_at)} post_fill={_post_fill_label(t.post_fill_action)}{linked} status={t.status}")
         lines.append("TRAILING BUY:")
         for t in self._trailing_buy_orders:
             if t.status != "active":
                 continue
-            lines.append(f"{t.order_id} {t.symbol} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={t.next_eval_at} post_fill={_post_fill_label(t.post_fill_action)} status={t.status}")
+            lines.append(f"{t.order_id} {t.symbol} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={_human_time(t.next_eval_at)} post_fill={_post_fill_label(t.post_fill_action)} status={t.status}")
         # OCO orders
         lines.append("OCO:")
         for o in getattr(self, "_oco_orders", []):
@@ -2306,7 +2314,7 @@ class TelegramTradingBot:
                         parts.append(f"core={l.get('core_order_id')}")
                     legs_text.append("(" + ", ".join(parts) + ")")
                 legs_joined = " ".join(legs_text)
-                lines.append(f"{o.order_id} watch={o.symbol} side={o.side} parent={o.parent_order_id} legs={legs_joined} tf={o.tf_minutes}m next={o.next_eval_at} status={o.status}")
+                lines.append(f"{o.order_id} watch={o.symbol} side={o.side} parent={o.parent_order_id} legs={legs_joined} tf={o.tf_minutes}m next={_human_time(o.next_eval_at)} status={o.status}")
             except Exception:
                 lines.append(str(o))
         lines.append(f"Timeframe={self._timeframe_seconds}s echo={self._echo_enabled} alert={self._alert_enabled}")
