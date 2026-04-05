@@ -102,6 +102,8 @@ Buone pratiche:
 - Motore: `core.py` (gestione ordini e poller).
 - Storage: `storage.py` (persistence, archive, schema).
 
+Per istruzioni di migrazione e handoff completo vedere: `docs/HANDOFF.md`
+
 Se hai bisogno, posso aggiungere una sezione con esempi passo-passo per creare il primo ordine OCO via UI Telegram.
 
 ## Interfaccia Telegram
