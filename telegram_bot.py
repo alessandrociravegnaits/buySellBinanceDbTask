@@ -561,6 +561,7 @@ class TelegramTradingBot:
         keyboard = [
             [KeyboardButton("🆕 Nuovo ordine"), KeyboardButton("📋 Ordini attivi")],
             [KeyboardButton("⚙️ Impostazioni"), KeyboardButton("ℹ️ Info")],
+            [KeyboardButton("💰 Account")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -744,6 +745,58 @@ class TelegramTradingBot:
 
     def _queue_message(self, chat_id: int, text: str):
         self._notifications.put((chat_id, text))
+
+    async def _send_chunked(self, update: Update, lines: List[str], max_chars: int = 3500):
+        chunks: List[str] = []
+        current: List[str] = []
+        current_len = 0
+
+        for line in lines:
+            line_len = len(line) + 1
+            if current and current_len + line_len > max_chars:
+                chunks.append("\n".join(current))
+                current = [line]
+                current_len = line_len
+            else:
+                current.append(line)
+                current_len += line_len
+
+        if current:
+            chunks.append("\n".join(current))
+
+        for chunk in chunks:
+            await self._send(update, chunk)
+
+    @staticmethod
+    def _to_float(value: Any) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _fmt_amount(value: float) -> str:
+        return f"{value:.8f}".rstrip("0").rstrip(".") or "0"
+
+    def _estimate_asset_usdt(self, asset: str, total_qty: float) -> Optional[float]:
+        normalized = (asset or "").upper()
+        if total_qty <= 0:
+            return 0.0
+        if normalized == "USDT":
+            return total_qty
+
+        client = self._public_exchange_client or self._exchange_client
+        if client is None:
+            return None
+
+        try:
+            ticker = client.get_symbol_ticker(symbol=f"{normalized}USDT")
+            price = self._to_float((ticker or {}).get("price"))
+            if price <= 0:
+                return None
+            return total_qty * price
+        except Exception:
+            return None
 
     @staticmethod
     def _exec_symbol(symbol: str, hook_symbol: Optional[str]) -> str:
@@ -1239,6 +1292,7 @@ class TelegramTradingBot:
             "/a 0|1 [PERCENT] - alert BTCUSDT\n"
             "/e 0|1 - echo prezzi\n"
             "/o - lista ordini con order_id\n"
+            "/account - riepilogo account Binance Spot\n"
             "/c ORDER_ID | /c a - cancella"
         )
 
@@ -1288,6 +1342,9 @@ class TelegramTradingBot:
         # robust Info match: check tokens so 'ℹ️ Info' or 'info ℹ️' both match
         if "info" in tokens or lowered == "info":
             await self._info(update, context)
+            return
+        if "account" in tokens or lowered == "account":
+            await self._cmd_account(update, context)
             return
 
         if lowered == "nuovo ordine":
@@ -2075,6 +2132,8 @@ class TelegramTradingBot:
                 await self._cmd_e(update, parts)
             elif cmd == "/o":
                 await self._cmd_o(update)
+            elif cmd == "/account":
+                await self._cmd_account(update, context)
             elif cmd == "/c":
                 await self._cmd_c(update, parts)
             elif cmd in {"/start", "/info"}:
@@ -2083,6 +2142,116 @@ class TelegramTradingBot:
                 await self._send(update, "Comando non riconosciuto. Usa /info")
         except Exception as exc:
             await self._send(update, f"Errore comando: {exc}")
+
+    async def _cmd_account(self, update: Update, context: Optional[ContextTypes.DEFAULT_TYPE] = None):
+        if not self._is_authorized(update):
+            return
+
+        if self._exchange_client is None:
+            await self._send(
+                update,
+                "Account non disponibile: configura BINANCE_API_KEY e BINANCE_SECRET_KEY con permessi read.",
+            )
+            return
+
+        try:
+            account = self._exchange_client.get_account()
+            open_orders = self._exchange_client.get_open_orders()
+        except (self._binance_api_error_cls, self._binance_request_error_cls, self._binance_order_error_cls) as exc:
+            self._storage.append_event(
+                "account_snapshot_failed",
+                payload={"error": str(exc), "error_type": type(exc).__name__},
+            )
+            await self._send(update, f"Errore lettura account Binance: {exc}")
+            return
+        except Exception as exc:
+            self._storage.append_event(
+                "account_snapshot_failed",
+                payload={"error": str(exc), "error_type": type(exc).__name__},
+            )
+            await self._send(update, "Errore interno durante la lettura account Binance.")
+            return
+
+        balances = account.get("balances") or []
+        assets_rows = []
+        estimable_total_usdt = 0.0
+        not_estimable = 0
+
+        for row in balances:
+            asset = str(row.get("asset") or "").upper()
+            free = self._to_float(row.get("free"))
+            locked = self._to_float(row.get("locked"))
+            total = free + locked
+            if total <= 0:
+                continue
+
+            usdt_estimate = self._estimate_asset_usdt(asset, total)
+            if usdt_estimate is None:
+                not_estimable += 1
+            else:
+                estimable_total_usdt += usdt_estimate
+
+            assets_rows.append((asset, free, locked, total, usdt_estimate))
+
+        assets_rows.sort(key=lambda x: x[3], reverse=True)
+
+        update_ms = account.get("updateTime")
+        try:
+            account_ts = (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(update_ms) / 1000.0)) if update_ms else "-"
+            )
+        except Exception:
+            account_ts = str(update_ms)
+
+        lines = ["Account Binance Spot", f"Aggiornamento: {account_ts}"]
+
+        permissions = account.get("permissions") or []
+        if permissions:
+            lines.append(f"Permessi: {', '.join(str(p) for p in permissions)}")
+
+        lines.append("")
+        lines.append("Asset posseduti:")
+        if not assets_rows:
+            lines.append("- Nessun asset con saldo > 0")
+        else:
+            for asset, free, locked, total, usdt_estimate in assets_rows:
+                usdt_label = "n/d" if usdt_estimate is None else f"{usdt_estimate:.2f}"
+                lines.append(
+                    f"- {asset}: free={self._fmt_amount(free)} locked={self._fmt_amount(locked)} "
+                    f"tot={self._fmt_amount(total)} ~USDT={usdt_label}"
+                )
+
+        lines.append("")
+        lines.append(f"Totale stimato ~USDT: {estimable_total_usdt:.2f} (asset non stimabili: {not_estimable})")
+
+        lines.append("")
+        lines.append("Ordini aperti (max 20):")
+        if not open_orders:
+            lines.append("- Nessun ordine aperto")
+        else:
+            for order in list(open_orders)[:20]:
+                symbol = order.get("symbol")
+                side = order.get("side")
+                order_type = order.get("type")
+                qty = order.get("origQty")
+                price = order.get("price")
+                stop_price = order.get("stopPrice")
+                status = order.get("status")
+                lines.append(
+                    f"- {symbol} {side} {order_type} qty={qty} price={price} stop={stop_price} status={status}"
+                )
+        lines.append(f"Totale ordini aperti: {len(open_orders)}")
+
+        self._storage.append_event(
+            "account_snapshot_ok",
+            payload={
+                "assets_non_zero": len(assets_rows),
+                "open_orders": len(open_orders),
+                "estimable_total_usdt": round(estimable_total_usdt, 8),
+                "not_estimable_assets": not_estimable,
+            },
+        )
+        await self._send_chunked(update, lines)
 
     async def _cmd_simple(self, update: Update, parts: List[str], side: str):
         parts, tf_minutes = self._extract_tf(parts)
@@ -2868,6 +3037,7 @@ class TelegramTradingBot:
         app = ApplicationBuilder().token(self._token).build()
         app.add_handler(CommandHandler("start", self._start))
         app.add_handler(CommandHandler("info", self._info))
+        app.add_handler(CommandHandler("account", self._cmd_account))
         app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^/"), self._on_slash_text))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.Regex(r"^/"), self._on_menu_text))
         app.add_handler(MessageHandler(filters.ALL, self._capture_chat_id))
