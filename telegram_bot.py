@@ -145,9 +145,13 @@ class TelegramTradingBot:
         self._notifications: "queue.Queue[Tuple[int, str]]" = queue.Queue()
         self._app: Optional[Application] = None
         self._exchange_client = None
+        self._public_exchange_client = None
         self._binance_api_error_cls = Exception
         self._binance_request_error_cls = Exception
         self._binance_order_error_cls = Exception
+        self._symbol_validation_cache: Dict[str, Tuple[float, bool, str]] = {}
+        self._symbol_validation_ttl_seconds = int(os.getenv("SYMBOL_VALIDATION_CACHE_TTL_SEC", "600"))
+        self._symbol_validation_soft_fail = os.getenv("SYMBOL_VALIDATION_SOFT_FAIL", "0") == "1"
         self._init_exchange_client()
 
         self._load_settings()
@@ -166,12 +170,75 @@ class TelegramTradingBot:
         api_secret = os.getenv("BINANCE_SECRET_KEY")
         if not api_key or not api_secret:
             log.warning("BINANCE_API_KEY/BINANCE_SECRET_KEY non impostate: esecuzione ordini disabilitata")
+            try:
+                self._public_exchange_client = Client()
+            except TypeError:
+                self._public_exchange_client = Client(None, None)
+            except Exception as exc:
+                log.warning("Client Binance pubblico non disponibile per validazione simboli: %s", exc)
             return
 
         self._exchange_client = Client(api_key, api_secret)
+        self._public_exchange_client = self._exchange_client
         self._binance_api_error_cls = BinanceAPIException
         self._binance_request_error_cls = BinanceRequestException
         self._binance_order_error_cls = BinanceOrderException
+
+    def _validate_spot_symbol(self, symbol: str, field_name: str = "SYMBOL") -> Tuple[bool, str]:
+        normalized = (symbol or "").strip().upper()
+        if not normalized:
+            return False, f"{field_name} vuoto: inserisci una coppia valida (es. BTCUSDT)"
+
+        now = time.time()
+        cached = self._symbol_validation_cache.get(normalized)
+        if cached and cached[0] > now:
+            return cached[1], cached[2]
+
+        client = self._exchange_client or self._public_exchange_client
+        if client is None:
+            message = "Validazione simbolo Binance non disponibile al momento"
+            self._storage.append_event("symbol_validation_skipped_unavailable", payload={"symbol": normalized, "field": field_name})
+            if self._symbol_validation_soft_fail:
+                return True, ""
+            return False, f"{message}. Riprova tra poco."
+
+        try:
+            info = client.get_symbol_info(normalized)
+        except (self._binance_api_error_cls, self._binance_request_error_cls, self._binance_order_error_cls) as exc:
+            self._storage.append_event(
+                "symbol_validation_failed",
+                payload={"symbol": normalized, "field": field_name, "error": str(exc), "error_type": type(exc).__name__},
+            )
+            if self._symbol_validation_soft_fail:
+                return True, ""
+            return False, "Validazione simbolo Binance non disponibile al momento. Riprova tra poco."
+        except Exception as exc:
+            self._storage.append_event(
+                "symbol_validation_failed",
+                payload={"symbol": normalized, "field": field_name, "error": str(exc), "error_type": type(exc).__name__},
+            )
+            if self._symbol_validation_soft_fail:
+                return True, ""
+            return False, "Errore durante validazione simbolo Binance. Riprova tra poco."
+
+        if not info:
+            message = f"{field_name} '{normalized}' non esiste su Binance Spot. Inserisci una coppia valida (es. BTCUSDT)."
+            self._symbol_validation_cache[normalized] = (now + self._symbol_validation_ttl_seconds, False, message)
+            self._storage.append_event("symbol_validation_failed", payload={"symbol": normalized, "field": field_name, "reason": "not_found"})
+            return False, message
+
+        status = str(info.get("status") or "UNKNOWN").upper()
+        if status != "TRADING":
+            message = f"{field_name} '{normalized}' presente ma non tradabile ora (status={status})."
+            self._symbol_validation_cache[normalized] = (now + self._symbol_validation_ttl_seconds, False, message)
+            self._storage.append_event(
+                "symbol_validation_failed", payload={"symbol": normalized, "field": field_name, "reason": "not_trading", "status": status}
+            )
+            return False, message
+
+        self._symbol_validation_cache[normalized] = (now + self._symbol_validation_ttl_seconds, True, "")
+        self._storage.append_event("symbol_validation_ok", payload={"symbol": normalized, "field": field_name})
+        return True, ""
 
     def _execute_simple_order_on_exchange(self, spec: SimpleOrderSpec) -> Dict[str, Any]:
         """Submit a MARKET order to Binance Spot and return raw API response."""
@@ -1291,7 +1358,12 @@ class TelegramTradingBot:
 
         try:
             if state == "simple_symbol":
-                draft["symbol"] = text.upper()
+                symbol = text.upper()
+                ok, message = self._validate_spot_symbol(symbol)
+                if not ok:
+                    await self._send(update, f"{message}\nReinserisci SYMBOL.", reply_markup=self._cancel_keyboard())
+                    return True
+                draft["symbol"] = symbol
                 self._set_ui_state(context, "simple_op", draft)
                 await self._send(update, "Scegli operatore trigger", reply_markup=self._operator_keyboard())
                 return True
@@ -1332,7 +1404,12 @@ class TelegramTradingBot:
                 await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "simple_hook_symbol":
-                draft["hook"] = text.upper()
+                hook = text.upper()
+                ok, message = self._validate_spot_symbol(hook, field_name="PAIRHOOK")
+                if not ok:
+                    await self._send(update, f"{message}\nReinserisci simbolo hook.", reply_markup=self._cancel_keyboard())
+                    return True
+                draft["hook"] = hook
                 self._set_ui_state(context, "simple_tf", draft)
                 await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
                 return True
@@ -1432,7 +1509,12 @@ class TelegramTradingBot:
                 return True
 
             if state == "function_symbol":
-                draft["symbol"] = text.upper()
+                symbol = text.upper()
+                ok, message = self._validate_spot_symbol(symbol)
+                if not ok:
+                    await self._send(update, f"{message}\nReinserisci SYMBOL.", reply_markup=self._cancel_keyboard())
+                    return True
+                draft["symbol"] = symbol
                 self._set_ui_state(context, "function_op", draft)
                 await self._send(update, "Scegli operatore trigger", reply_markup=self._operator_keyboard())
                 return True
@@ -1478,7 +1560,12 @@ class TelegramTradingBot:
                 await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "function_hook_symbol":
-                draft["hook"] = text.upper()
+                hook = text.upper()
+                ok, message = self._validate_spot_symbol(hook, field_name="PAIRHOOK")
+                if not ok:
+                    await self._send(update, f"{message}\nReinserisci simbolo hook.", reply_markup=self._cancel_keyboard())
+                    return True
+                draft["hook"] = hook
                 self._set_ui_state(context, "function_tf", draft)
                 await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
                 return True
@@ -1569,7 +1656,12 @@ class TelegramTradingBot:
                 return True
 
             if state == "ts_symbol":
-                draft["symbol"] = text.upper()
+                symbol = text.upper()
+                ok, message = self._validate_spot_symbol(symbol)
+                if not ok:
+                    await self._send(update, f"{message}\nReinserisci SYMBOL.", reply_markup=self._cancel_keyboard())
+                    return True
+                draft["symbol"] = symbol
                 self._set_ui_state(context, "ts_percent", draft)
                 await self._send(update, "Inserisci percent trailing", reply_markup=self._cancel_keyboard())
                 return True
@@ -1613,7 +1705,12 @@ class TelegramTradingBot:
                 await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "ts_hook_symbol":
-                draft["hook"] = text.upper()
+                hook = text.upper()
+                ok, message = self._validate_spot_symbol(hook, field_name="PAIRHOOK")
+                if not ok:
+                    await self._send(update, f"{message}\nReinserisci simbolo hook.", reply_markup=self._cancel_keyboard())
+                    return True
+                draft["hook"] = hook
                 self._set_ui_state(context, "ts_tf", draft)
                 await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
                 return True
@@ -1638,7 +1735,12 @@ class TelegramTradingBot:
                 return True
 
             if state == "tb_symbol":
-                draft["symbol"] = text.upper()
+                symbol = text.upper()
+                ok, message = self._validate_spot_symbol(symbol)
+                if not ok:
+                    await self._send(update, f"{message}\nReinserisci SYMBOL.", reply_markup=self._cancel_keyboard())
+                    return True
+                draft["symbol"] = symbol
                 self._set_ui_state(context, "tb_percent", draft)
                 await self._send(update, "Inserisci percent trailing", reply_markup=self._cancel_keyboard())
                 return True
@@ -1735,7 +1837,12 @@ class TelegramTradingBot:
 
             # OCO guided flow
             if state == "oco_symbol":
-                draft["symbol"] = text.upper()
+                symbol = text.upper()
+                ok, message = self._validate_spot_symbol(symbol)
+                if not ok:
+                    await self._send(update, f"{message}\nReinserisci SYMBOL.", reply_markup=self._cancel_keyboard())
+                    return True
+                draft["symbol"] = symbol
                 self._set_ui_state(context, "oco_side", draft)
                 await self._send(update, "Seleziona side per OCO (buy/sell)", reply_markup=self._side_keyboard())
                 return True
@@ -1981,6 +2088,13 @@ class TelegramTradingBot:
         parts, tf_minutes = self._extract_tf(parts)
         parts, post_fill_action = self._extract_post_fill_action(parts)
         symbol, op, trigger_val, qty, hook = self._parse_simple_order(parts)
+        ok, message = self._validate_spot_symbol(symbol)
+        if not ok:
+            raise ValueError(message)
+        if hook:
+            ok, message = self._validate_spot_symbol(hook, field_name="PAIRHOOK")
+            if not ok:
+                raise ValueError(message)
         if side != "buy" and post_fill_action is not None:
             raise ValueError("post_fill_action supportata solo su ordini buy")
         chat_id = update.effective_chat.id
@@ -2041,6 +2155,13 @@ class TelegramTradingBot:
         hook = parts[6][1:].upper() if len(parts) >= 7 and parts[6].startswith("@") else None
         if op not in {"<", ">"}:
             raise ValueError("Operatore non valido: usa < oppure >")
+        ok, message = self._validate_spot_symbol(symbol)
+        if not ok:
+            raise ValueError(message)
+        if hook:
+            ok, message = self._validate_spot_symbol(hook, field_name="PAIRHOOK")
+            if not ok:
+                raise ValueError(message)
 
         chat_id = update.effective_chat.id
         order_id = self._new_order_id()
@@ -2101,6 +2222,13 @@ class TelegramTradingBot:
                 hook = token[1:].upper()
             else:
                 limit = float(token)
+        ok, message = self._validate_spot_symbol(symbol)
+        if not ok:
+            raise ValueError(message)
+        if hook:
+            ok, message = self._validate_spot_symbol(hook, field_name="PAIRHOOK")
+            if not ok:
+                raise ValueError(message)
 
         chat_id = update.effective_chat.id
         order_id = self._new_order_id()
@@ -2157,6 +2285,9 @@ class TelegramTradingBot:
         percent = float(parts[2])
         qty = float(parts[3])
         limit = float(parts[4])
+        ok, message = self._validate_spot_symbol(symbol)
+        if not ok:
+            raise ValueError(message)
 
         chat_id = update.effective_chat.id
         order_id = self._new_order_id()

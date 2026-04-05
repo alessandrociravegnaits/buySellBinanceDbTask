@@ -40,6 +40,9 @@ python telegram_bot.py
 Last validation:
 - 2026-04-02: `python -m pytest -q` => `2 passed, 4 warnings`.
 
+- 2026-04-05: Implemented Binance symbol validator in `telegram_bot.py` (in-memory cache TTL, exception handling). Added targeted tests and ran `tests/test_cancel_order_ui.py` → `4 passed, 4 warnings`.
+
+
 ## Required Env
 - `BOT_TOKEN`
 - `BINANCE_API_KEY`

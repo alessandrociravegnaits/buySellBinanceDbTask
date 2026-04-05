@@ -242,6 +242,27 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Validazione simbolo Binance
+
+Il bot effettua una validazione preventiva del simbolo (es. `BTCUSDT`) contro l'endpoint `exchangeInfo` di Binance prima di creare un nuovo ordine. La policy adottata in questa iterazione è:
+
+- validare che `Client.get_symbol_info(symbol)` ritorni non `None` e che il campo `status` sia `"TRADING"`;
+- gestire `BinanceAPIException` e `BinanceRequestException` facendo fallback sicuro senza crash del bot;
+- usare una cache in memoria con TTL (configurabile, suggerito 5-15 minuti) per limitare le chiamate a `exchangeInfo` e mantenere bassa la latenza di inserimento ordini;
+- default operativo: `fail-closed` (se l'API non è raggiungibile l'ordine non viene creato); è disponibile la variabile d'ambiente `SYMBOL_VALIDATION_SOFT_FAIL=1` per ambienti di test/development che vogliano comportamento permissivo.
+
+Implementazione tecnica:
+
+- helper centralizzato `_validate_spot_symbol(symbol)` in `telegram_bot.py` che normalizza l'input, usa `client.get_symbol_info` e ritorna un result object `{ok: bool, reason: Optional[str]}`;
+- integrazione del check immediatamente dopo il parsing del simbolo nei comandi slash e nel passo wizard che acquisisce il simbolo (prima del salvataggio in DB e prima di `poller.add_symbol`);
+- logging/event audit (`symbol_validation_failed`, `symbol_validation_ok`) memorizzati con `storage.append_event`.
+
+Vantaggi e rischi mitigati:
+
+- evita ordini con simboli inesistenti o non tradabili in DB (migliore UX e meno stato sporco);
+- riduce errori a runtime durante l'esecuzione degli ordini; il caching riduce impatto su rate limits;
+- rischio residuo: latenza aggiuntiva sull'operazione di creazione ordine (mitigata da cache e dal fatto che è un'operazione utente, non hot path).
+
 11) Aree di attenzione / miglioramenti suggeriti
 - Verificare che `price_feeds.Binance1mClosePriceFeed.get_price(symbol, tf_minutes)` restituisca close price della candle corretta (allineamento UTC strict). Confronta `spunto.py` per replicare perfettamente gli corner case storici.
 - Uniformare il comportamento di `/S` e `/B` al 100% con la logica storica in `spunto.py`, specialmente sui corner case (advertised requirement: riga-per-riga match).
