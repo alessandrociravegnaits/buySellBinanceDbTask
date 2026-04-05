@@ -998,6 +998,8 @@ class TelegramTradingBot:
             self._manager.add_order(order_obj)
             # persist core id mapping
             self._storage.update_oco_leg_core_order_id(spec.order_id, leg_index, core_id)
+            # keep in-memory leg mapping in sync with persisted core id
+            leg["core_order_id"] = core_id
 
     def _cancel_linked_trailing_order(self, trailing_order_id: int):
         for spec in list(self._trailing_sell_orders):
