@@ -548,6 +548,8 @@ class TelegramTradingBot:
         return self._storage.next_order_id()
 
     def _is_authorized(self, update: Update) -> bool:
+        # Compatibility mode for tests/manual instantiation: if no chat id is configured,
+        # allow access. Production startup enforces AUTHORIZED_CHAT_ID via build_bot_from_env.
         if self._authorized_chat_id is None:
             return True
         return bool(update.effective_chat and update.effective_chat.id == self._authorized_chat_id)
@@ -3032,7 +3034,7 @@ class TelegramTradingBot:
                 log.error("Invio Telegram fallito: %s", exc)
 
     async def _capture_chat_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_chat:
+        if update.effective_chat and self._is_authorized(update):
             context.application.bot_data["last_chat_id"] = update.effective_chat.id
 
     def build_application(self) -> Application:
@@ -3066,7 +3068,9 @@ def build_bot_from_env() -> TelegramTradingBot:
         raise RuntimeError("BOT_TOKEN non impostato")
 
     raw_chat_id = os.getenv("AUTHORIZED_CHAT_ID")
-    chat_id = int(raw_chat_id) if raw_chat_id else None
+    if not raw_chat_id:
+        raise RuntimeError("AUTHORIZED_CHAT_ID non impostato: configura il tuo chat id per limitare l'accesso al bot")
+    chat_id = int(raw_chat_id)
     db_path = os.getenv("BOT_DB_PATH", "data/bot.sqlite3")
     return TelegramTradingBot(token=token, authorized_chat_id=chat_id, db_path=db_path)
 
