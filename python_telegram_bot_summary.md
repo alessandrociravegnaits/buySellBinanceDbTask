@@ -34,6 +34,11 @@
   - Usare webhook in produzione con HTTPS e `secret_token`.
   - Gestire retry/rate-limit e error handling centralizzato.
 
+- **Nota progetto corrente:**
+  - Il bot del repo usa `ApplicationBuilder`, `AUTHORIZED_CHAT_ID` da `.env` e persistenza SQLite.
+  - Le impostazioni runtime sono salvate in `bot_settings` e includono anche la soglia BTC di liquidazione automatica (`btc_liquidation_drop_percent`).
+  - I riassunti di sessione vengono mantenuti in `.copilot-memory/` alla root del progetto, in file Markdown per argomento.
+
 - **Esempio rapido:**
 ```python
 from telegram import Update

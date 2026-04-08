@@ -3,6 +3,9 @@
 ## Obiettivo
 Rendere trasferibile il contesto di lavoro tra sessioni/macchine senza perdere decisioni e stato.
 
+## Preferenza sessioni
+- I riassunti di sessione vanno salvati in `.copilot-memory/` alla root del progetto, in file Markdown separati per argomento.
+
 ## File guida
 - `docs/ai/AI_HANDOFF_CURRENT.md`
 - `docs/ai/AI_DECISIONS_LOG.md`
@@ -15,6 +18,7 @@ Rendere trasferibile il contesto di lavoro tra sessioni/macchine senza perdere d
 1. Prima di chiudere: test, aggiornamento handoff corrente, update decision log.
 2. Passaggio macchina: clone, setup venv, env, test smoke.
 3. Nuova sessione: leggere README + ARCHITECTURE + AI_HANDOFF_CURRENT.
+4. Aggiornare anche i riassunti in `.copilot-memory/` quando cambiano decisioni o runtime settings.
 
 ## Rischi processo
 - Handoff non aggiornato = perdita contesto.

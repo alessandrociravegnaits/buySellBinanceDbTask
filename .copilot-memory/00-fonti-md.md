@@ -7,6 +7,7 @@
 - `python_telegram_bot_summary.md`: note libreria telegram bot.
 - `ISTRUZIONI_persistenza_contesto_cambio_macchina.md`: handoff tra macchine.
 - `PROMPTdiRineallineamento.md`: prompt di riallineamento contesto.
+- `.copilot-memory/`: riassunti di sessione per argomento in Markdown.
 
 ## Docs
 - `docs/HANDOFF.md`: runbook e stato passaggio consegne.
@@ -21,4 +22,4 @@
 - `docs/ai/AI_HANDOFF_TEMPLATE.md`
 - `docs/ai/AI_PASS1_LAST_RUN.md`
 
-Aggiornato: 2026-04-06
+Aggiornato: 2026-04-08

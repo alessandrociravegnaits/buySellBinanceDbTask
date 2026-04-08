@@ -1,5 +1,5 @@
 . scrivo:
-Salva sempre i riassunti di sessione suddivisi per argomento  in .copilot-memory/  nella root del progetto, in formato MD.
+Salva sempre i riassunti di sessione suddivisi per argomento  in .copilot-memory,aggiornando eventualmente quelli gia presenti  nella root del progetto, in formato MD e riallinea tutti gli altri eventuali md rimanenti
 
 . Lancio "rag"
 

@@ -128,4 +128,24 @@
 - Eseguire test completi (`python -m pytest -q`).
 - Commit delle modifiche con identita git corretta (`user.email`).
 - Aggiornare questo file a fine prossime sessioni.
+
+## Sessione 2026-04-08 - BTC liquidation default e storage
+
+### Obiettivo
+- Chiarire dove viene salvata la soglia di caduta BTC e aggiornare il default runtime a 0.5%.
+
+### Decisioni e implementazione
+- Il valore `btc_liquidation_drop_percent` viene salvato in `bot_settings` dentro il DB SQLite.
+- Non e' stata creata una nuova tabella: si usa la tabella esistente `bot_settings` con chiave `btc_liquidation_drop_percent`.
+- Il default runtime e' stato cambiato da `2.0` a `0.5` in `telegram_bot.py`.
+- L'esempio operativo in `README.md` e' stato aggiornato da `/ad 2.0` a `/ad 0.5`.
+
+### Comportamento risultante
+- Se la soglia non e' presente in DB, il bot usa `BTC_LIQUIDATION_DROP_PERCENT` da env con fallback `0.5`.
+- La liquidazione BTC resta separata dall'alert visivo `/a`.
+- La soglia e' visibile nei comandi di stato come valore corrente del bot.
+
+### Verifiche
+- Test mirati su storage e integrazione OCO/liquidazione eseguiti con esito positivo.
+- Nessun errore sintattico trovato dopo la modifica del fallback runtime.
  

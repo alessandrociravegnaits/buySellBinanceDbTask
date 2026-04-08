@@ -84,6 +84,7 @@ python telegram_bot.py
 - Docs handoff: `docs/HANDOFF.md` (questo file)
 - Stato corrente e runbook PASS1: `docs/ai/AI_HANDOFF_CURRENT.md` e `docs/ai/AI_MIGRATION_PASS1_RUNBOOK.md`
 - Registro IA (modifiche fatte dall'assistente): `/memories/ia_rules.md`
+- Riassunti di sessione del progetto: `.copilot-memory/` alla root, suddivisi per argomento in file Markdown.
 
 11) Check list rapida
 - [ ] repo clonato e branch corretto
@@ -96,6 +97,7 @@ python telegram_bot.py
 Note operative
 - Le chiavi Binance sono sensibili: usa secret manager per produzione.
 - Se non vuoi esporre chiavi in dev, rimuovi l'esecuzione delle parti che richiedono `_exchange_client` e usa il `MockPriceFeed` per test.
+- Le impostazioni runtime persistite stanno in `bot_settings` nel DB SQLite; la soglia BTC di liquidazione automatica usa la chiave `btc_liquidation_drop_percent`.
 
 Contatti e riferimenti
 - File principali: `telegram_bot.py`, `core.py`, `storage.py`, `price_feeds.py`.
