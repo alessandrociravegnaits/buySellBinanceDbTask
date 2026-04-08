@@ -319,3 +319,36 @@ Se vuoi che prepari un file `docs/HANDOFF.md` contenente checklist esatta, coman
 
 Dimmi quali passi vuoi che esegua adesso: procedo ad applicare modifiche al codice e creare i file necessari (DB schema, .gitignore, requirements aggiornato) oppure preferisci prima che generi test/unit?
 
+## Aggiornamento: BTC Drop Liquidation (2026-04-08)
+
+Questa revisione introduce una separazione esplicita tra:
+
+- alert BTC informativo (solo notifica), configurato con `/a`;
+- trigger di liquidazione automatica (risk-off), configurato con `/ad`.
+
+Dettagli architetturali:
+
+- Impostazione soglia dedicata:
+  - nuovo setting runtime/persistito `btc_liquidation_drop_percent`;
+  - fallback su `BTC_LIQUIDATION_DROP_PERCENT` da `.env` quando il valore non e' presente in DB.
+
+- Semantica trigger:
+  - la liquidazione si attiva solo su movimento ribassista del BTC;
+  - condizione: variazione percentuale <= `-btc_liquidation_drop_percent`;
+  - movimenti rialzisti non attivano la liquidazione.
+
+- Scope ordini liquidabili:
+  - vengono chiusi solo ordini sell esplicitamente flaggati con `btc_alert_liquidate=1`;
+  - coperti i tipi: sell semplice, trailing sell e OCO (con gestione leg/chiusura coerente).
+
+- Persistenza e restore:
+  - il flag ordine `btc_alert_liquidate` e' salvato in `orders`;
+  - il restore runtime ricarica il flag per mantenere il comportamento dopo restart;
+  - l'archiviazione mensile conserva il flag.
+
+- UX e operativita':
+  - wizard guidato esteso con domanda yes/no per abilitare il flag BTC per ordine;
+  - output di `/o` e `Info` aggiornati per mostrare i valori correnti di alert e soglia drop liquidation.
+
+Obiettivo: mantenere l'alert BTC come strumento osservativo indipendente, e usare la liquidazione automatica come meccanismo di protezione esplicito, configurabile e auditabile.
+

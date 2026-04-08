@@ -79,6 +79,7 @@ def test_post_fill_action_persistence(tmp_path):
         qty=0.001,
         hook_symbol=None,
         core_order_id=parent_id,
+        btc_alert_liquidate=False,
         tf_minutes=15,
         next_eval_at=None,
         last_eval_at=None,
@@ -113,6 +114,61 @@ def test_post_fill_action_persistence(tmp_path):
     assert oco_row is not None
     assert oco_row[0] == parent_id
 
+    conn.close()
+    storage.close()
+
+
+def test_btc_alert_liquidate_flag_persistence(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    storage = SQLiteStorage(db_path, archive_dir)
+
+    simple_id = storage.next_order_id()
+    storage.save_simple_order(
+        order_id=simple_id,
+        chat_id=7,
+        side="sell",
+        symbol="ETHUSDT",
+        op=">",
+        trigger_value=3000.0,
+        qty=0.25,
+        hook_symbol=None,
+        core_order_id=None,
+        btc_alert_liquidate=True,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        post_fill_action=None,
+        status="active",
+    )
+
+    oco_id = storage.next_order_id()
+    storage.save_oco_order(
+        order_id=oco_id,
+        chat_id=7,
+        symbol="BTCUSDT",
+        side="sell",
+        legs=[{"leg_index": 1, "ordertype": "limit", "price": 72000.0, "qty": 0.001, "side": "sell"}],
+        hook_symbol=None,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        btc_alert_liquidate=True,
+        status="active",
+    )
+
+    active = storage.load_active_orders()
+    assert active["simple"][0]["btc_alert_liquidate"] == 1
+    assert active["oco"][0]["btc_alert_liquidate"] == 1
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT btc_alert_liquidate FROM orders WHERE order_id = ?", (simple_id,))
+    assert cur.fetchone()[0] == 1
+    cur.execute("SELECT btc_alert_liquidate FROM orders WHERE order_id = ?", (oco_id,))
+    assert cur.fetchone()[0] == 1
     conn.close()
     storage.close()
 

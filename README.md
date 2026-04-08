@@ -137,7 +137,7 @@ python main.py
 
 Comandi supportati (interfaccia Telegram):
 - `/info` (mostra guida comandi e, nella sezione "Valori correnti", i runtime settings)
-- `/t` `/a` `/e` `/s` `/b` `/f` `/S` `/B` `/c ORDER_ID` oppure `/c a` `/o`
+- `/t` `/a` `/ad` `/e` `/s` `/b` `/f` `/S` `/B` `/c ORDER_ID` oppure `/c a` `/o`
 
 Nel menu `Impostazioni -> Cancella ordine` puoi ora toccare direttamente i bottoni sintetici `#id:pair:tipo` (es. `#42:BTCUSDT:buy`) senza digitare l'ID a mano.
 
@@ -165,6 +165,38 @@ Formato supportato:
 - `sl`: `%`, valore fisso, oppure `trail:x%`
 
 Le due gambe sono indipendenti: puoi scegliere liberamente il mode per ciascuna leg.
+
+## BTC Sell Drop Liquidation
+
+La liquidazione automatica su BTC e separata dall'alert visivo (`/a`):
+
+- `/a 0|1 [PERCENT]` resta un alert Telegram informativo.
+- `/ad PERCENT` imposta la soglia percentuale di caduta BTC che attiva la liquidazione automatica.
+
+Semantica trigger liquidazione:
+
+- Il monitor BTC gira sempre nel job runtime.
+- La liquidazione scatta solo su caduta, non su rialzo.
+- Condizione: `variazione <= -PERCENT` rispetto al reference price del ciclo precedente.
+- Finestra di valutazione: 60s (stessa cadenza del monitor alert).
+
+Ambito ordini liquidati:
+
+- Solo ordini con flag `btc_alert_liquidate=true`.
+- Copertura: sell semplici, trailing sell e OCO sell (incluse leg/sibling cancellate prima del market sell finale).
+
+Come impostare il flag ordine:
+
+- Slash command: aggiungi `btc_alert=1` (equivalenti: `btc_alert`, `btc_liquidate`) ai comandi ordine.
+- Wizard UI: dopo il timeframe viene chiesto se abilitare la liquidazione su caduta BTC per l'ordine corrente.
+
+Esempi:
+
+```text
+/s ETHUSDT > 3000 0.25 tf=15 btc_alert=1
+/S BNBUSDT 1.5 0.5 tf=15 btc_alert=1
+/ad 0.5
+```
 
 Comportamento:
 - all'esecuzione del buy, il bot crea automaticamente un OCO figlio,
