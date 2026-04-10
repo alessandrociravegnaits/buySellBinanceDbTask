@@ -297,3 +297,43 @@ python main.py
 
 Se preferisci, posso generare uno script di esportazione/import per `data/bot.sqlite3` e un `docs/HANDOFF.md` con checklist e comandi rapidi; dimmi se lo vuoi ora.
 
+## Indicatori Tecnici (nuovo)
+
+Il progetto include ora `indicators.py` con la classe `TechnicalIndicators`, pensata per essere richiamata dal bot nelle nuove regole operative.
+
+Indicatori disponibili:
+- `rsi(14)`
+- `atr(14)`
+- `adx(14)` con `plus_di` e `minus_di`
+- `obv()`
+- `volume_ma(20)`
+- `sma(20)` / `ema(20)`
+- `atr_stop()` per stop dinamici
+
+Esempio rapido:
+
+```python
+import pandas as pd
+from indicators import TechnicalIndicators
+
+df = pd.DataFrame(
+	{
+		"timestamp": [...],
+		"open": [...],
+		"high": [...],
+		"low": [...],
+		"close": [...],
+		"volume": [...],
+	}
+)
+
+ti = TechnicalIndicators.from_ohlcv(df)
+signals = ti.compute_default_set()
+last = ti.latest_snapshot()
+
+print(last["rsi_14"], last["adx_14"], last["volume_ma_20"])
+```
+
+Compatibilità MCP finance:
+- puoi usare `TechnicalIndicators.from_mcp_price_history(payload)` passando una lista di record OHLCV o un dizionario con chiave `data`/`prices`/`ohlcv`.
+
