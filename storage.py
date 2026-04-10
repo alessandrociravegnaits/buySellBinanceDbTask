@@ -64,6 +64,7 @@ class SQLiteStorage:
                 hook_symbol TEXT,
                 core_order_id INTEGER,
                 post_fill_action TEXT,
+                acquistopulito INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
             );
 
@@ -78,6 +79,7 @@ class SQLiteStorage:
                 bought INTEGER NOT NULL DEFAULT 0,
                 prev_price REAL,
                 post_fill_action TEXT,
+                acquistopulito INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
             );
 
@@ -94,6 +96,7 @@ class SQLiteStorage:
                 min_price REAL,
                 arm_op TEXT,
                 post_fill_action TEXT,
+                acquistopulito INTEGER NOT NULL DEFAULT 0,
                 oco_parent_order_id INTEGER,
                 oco_leg_index INTEGER,
                 FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
@@ -105,6 +108,7 @@ class SQLiteStorage:
                 side TEXT NOT NULL,
                 hook_symbol TEXT,
                 parent_order_id INTEGER,
+                acquistopulito INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE CASCADE
             );
 
@@ -148,14 +152,20 @@ class SQLiteStorage:
         simple_cols = {row[1] for row in conn.execute("PRAGMA table_info(order_simple)").fetchall()}
         if "post_fill_action" not in simple_cols:
             conn.execute("ALTER TABLE order_simple ADD COLUMN post_fill_action TEXT")
+        if "acquistopulito" not in simple_cols:
+            conn.execute("ALTER TABLE order_simple ADD COLUMN acquistopulito INTEGER NOT NULL DEFAULT 0")
 
         function_cols = {row[1] for row in conn.execute("PRAGMA table_info(order_function)").fetchall()}
         if "post_fill_action" not in function_cols:
             conn.execute("ALTER TABLE order_function ADD COLUMN post_fill_action TEXT")
+        if "acquistopulito" not in function_cols:
+            conn.execute("ALTER TABLE order_function ADD COLUMN acquistopulito INTEGER NOT NULL DEFAULT 0")
 
         trailing_cols = {row[1] for row in conn.execute("PRAGMA table_info(order_trailing)").fetchall()}
         if "post_fill_action" not in trailing_cols:
             conn.execute("ALTER TABLE order_trailing ADD COLUMN post_fill_action TEXT")
+        if "acquistopulito" not in trailing_cols:
+            conn.execute("ALTER TABLE order_trailing ADD COLUMN acquistopulito INTEGER NOT NULL DEFAULT 0")
         if "oco_parent_order_id" not in trailing_cols:
             conn.execute("ALTER TABLE order_trailing ADD COLUMN oco_parent_order_id INTEGER")
         if "oco_leg_index" not in trailing_cols:
@@ -168,6 +178,8 @@ class SQLiteStorage:
         oco_cols = {row[1] for row in conn.execute("PRAGMA table_info(order_oco)").fetchall()}
         if "parent_order_id" not in oco_cols:
             conn.execute("ALTER TABLE order_oco ADD COLUMN parent_order_id INTEGER")
+        if "acquistopulito" not in oco_cols:
+            conn.execute("ALTER TABLE order_oco ADD COLUMN acquistopulito INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
     def close(self):
@@ -223,6 +235,7 @@ class SQLiteStorage:
         next_eval_at: Optional[int],
         last_eval_at: Optional[int],
         post_fill_action: Optional[Dict[str, Any]] = None,
+        acquistopulito: bool = False,
         status: str = "active",
     ):
         now = self._now_iso()
@@ -237,10 +250,21 @@ class SQLiteStorage:
             )
             self._conn.execute(
                 """
-                INSERT INTO order_simple(order_id, side, symbol, op, trigger_value, qty, hook_symbol, core_order_id, post_fill_action)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO order_simple(order_id, side, symbol, op, trigger_value, qty, hook_symbol, core_order_id, post_fill_action, acquistopulito)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (order_id, side, symbol, op, trigger_value, qty, hook_symbol, core_order_id, json.dumps(post_fill_action, ensure_ascii=True) if post_fill_action else None),
+                (
+                    order_id,
+                    side,
+                    symbol,
+                    op,
+                    trigger_value,
+                    qty,
+                    hook_symbol,
+                    core_order_id,
+                    json.dumps(post_fill_action, ensure_ascii=True) if post_fill_action else None,
+                    int(acquistopulito),
+                ),
             )
             self._conn.commit()
 
@@ -260,6 +284,7 @@ class SQLiteStorage:
         next_eval_at: Optional[int],
         last_eval_at: Optional[int],
         post_fill_action: Optional[Dict[str, Any]] = None,
+        acquistopulito: bool = False,
         status: str = "active",
     ):
         now = self._now_iso()
@@ -274,10 +299,22 @@ class SQLiteStorage:
             )
             self._conn.execute(
                 """
-                INSERT INTO order_function(order_id, symbol, op, trigger_value, qty, percent, hook_symbol, bought, prev_price, post_fill_action)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO order_function(order_id, symbol, op, trigger_value, qty, percent, hook_symbol, bought, prev_price, post_fill_action, acquistopulito)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (order_id, symbol, op, trigger_value, qty, percent, hook_symbol, int(bought), prev_price, json.dumps(post_fill_action, ensure_ascii=True) if post_fill_action else None),
+                (
+                    order_id,
+                    symbol,
+                    op,
+                    trigger_value,
+                    qty,
+                    percent,
+                    hook_symbol,
+                    int(bought),
+                    prev_price,
+                    json.dumps(post_fill_action, ensure_ascii=True) if post_fill_action else None,
+                    int(acquistopulito),
+                ),
             )
             self._conn.commit()
 
@@ -299,6 +336,7 @@ class SQLiteStorage:
         next_eval_at: Optional[int],
         last_eval_at: Optional[int],
         post_fill_action: Optional[Dict[str, Any]] = None,
+        acquistopulito: bool = False,
         oco_parent_order_id: Optional[int] = None,
         oco_leg_index: Optional[int] = None,
         status: str = "active",
@@ -315,8 +353,8 @@ class SQLiteStorage:
             )
             self._conn.execute(
                 """
-                INSERT INTO order_trailing(order_id, side, symbol, qty, percent, limit_price, hook_symbol, armed, max_price, min_price, arm_op, post_fill_action, oco_parent_order_id, oco_leg_index)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO order_trailing(order_id, side, symbol, qty, percent, limit_price, hook_symbol, armed, max_price, min_price, arm_op, post_fill_action, acquistopulito, oco_parent_order_id, oco_leg_index)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     order_id,
@@ -331,6 +369,7 @@ class SQLiteStorage:
                     min_price,
                     arm_op,
                     json.dumps(post_fill_action, ensure_ascii=True) if post_fill_action else None,
+                    int(acquistopulito),
                     oco_parent_order_id,
                     oco_leg_index,
                 ),
@@ -349,6 +388,7 @@ class SQLiteStorage:
         next_eval_at: Optional[int],
         last_eval_at: Optional[int],
         parent_order_id: Optional[int] = None,
+        acquistopulito: bool = False,
         status: str = "active",
     ):
         """Persist an OCO order with its legs.
@@ -366,8 +406,8 @@ class SQLiteStorage:
                 (tf_minutes, next_eval_at, last_eval_at, order_id),
             )
             self._conn.execute(
-                "INSERT INTO order_oco(order_id, symbol, side, hook_symbol, parent_order_id) VALUES(?, ?, ?, ?, ?)",
-                (order_id, symbol, side, hook_symbol, parent_order_id),
+                "INSERT INTO order_oco(order_id, symbol, side, hook_symbol, parent_order_id, acquistopulito) VALUES(?, ?, ?, ?, ?, ?)",
+                (order_id, symbol, side, hook_symbol, parent_order_id, int(acquistopulito)),
             )
             for leg in legs:
                 self._conn.execute(
@@ -467,7 +507,7 @@ class SQLiteStorage:
             simple = self._conn.execute(
                 """
                 SELECT o.order_id, o.chat_id, o.status, s.side, s.symbol, s.op, s.trigger_value, s.qty, s.hook_symbol, s.core_order_id
-                     , s.post_fill_action
+                     , s.post_fill_action, s.acquistopulito
                      , o.tf_minutes, o.next_eval_at, o.last_eval_at
                 FROM orders o
                 JOIN order_simple s ON s.order_id = o.order_id
@@ -479,7 +519,7 @@ class SQLiteStorage:
             function = self._conn.execute(
                 """
                 SELECT o.order_id, o.chat_id, o.status, f.symbol, f.op, f.trigger_value, f.qty, f.percent, f.hook_symbol, f.bought, f.prev_price
-                     , f.post_fill_action
+                     , f.post_fill_action, f.acquistopulito
                      , o.tf_minutes, o.next_eval_at, o.last_eval_at
                 FROM orders o
                 JOIN order_function f ON f.order_id = o.order_id
@@ -491,7 +531,7 @@ class SQLiteStorage:
             trailing = self._conn.execute(
                 """
                 SELECT o.order_id, o.chat_id, o.status, t.side, t.symbol, t.qty, t.percent, t.limit_price, t.hook_symbol, t.armed, t.max_price, t.min_price, t.arm_op
-                     , t.post_fill_action, t.oco_parent_order_id, t.oco_leg_index
+                     , t.post_fill_action, t.acquistopulito, t.oco_parent_order_id, t.oco_leg_index
                      , o.tf_minutes, o.next_eval_at, o.last_eval_at
                 FROM orders o
                 JOIN order_trailing t ON t.order_id = o.order_id
@@ -503,7 +543,7 @@ class SQLiteStorage:
             # OCO orders: parent + legs
             oco_parents = self._conn.execute(
                 """
-                 SELECT o.order_id, o.chat_id, o.status, oc.symbol, oc.side, oc.parent_order_id
+                 SELECT o.order_id, o.chat_id, o.status, oc.symbol, oc.side, oc.parent_order_id, oc.acquistopulito
                      , o.tf_minutes, o.next_eval_at, o.last_eval_at
                 FROM orders o
                 JOIN order_oco oc ON oc.order_id = o.order_id

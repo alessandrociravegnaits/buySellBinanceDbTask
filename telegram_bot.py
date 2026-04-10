@@ -9,11 +9,13 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+import pandas as pd
 from dotenv import load_dotenv
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 from core import Action, Order, OrderBehavior, Trigger, build_engine
+from indicators import TechnicalIndicators
 from price_feeds import Binance1mClosePriceFeed
 from storage import SQLiteStorage
 
@@ -22,6 +24,32 @@ log = logging.getLogger(__name__)
 VALID_TF_MINUTES = {1, 5, 15, 30, 60, 120, 240, 1440}
 UI_STATE_KEY = "ui_state"
 UI_DRAFT_KEY = "ui_draft"
+CLEAN_ENTRY_PRESETS: Dict[str, Dict[str, Any]] = {
+    "conservativo": {
+        "rsi_min": 55.0,
+        "adx_min": 22.0,
+        "required_checks": 5,
+        "require_trend": True,
+        "require_volume": True,
+        "require_price_above_ema": True,
+    },
+    "bilanciato": {
+        "rsi_min": 50.0,
+        "adx_min": 18.0,
+        "required_checks": 4,
+        "require_trend": True,
+        "require_volume": True,
+        "require_price_above_ema": True,
+    },
+    "aggressivo": {
+        "rsi_min": 45.0,
+        "adx_min": 14.0,
+        "required_checks": 3,
+        "require_trend": True,
+        "require_volume": False,
+        "require_price_above_ema": True,
+    },
+}
 
 
 @dataclass
@@ -39,6 +67,7 @@ class SimpleOrderSpec:
     next_eval_at: Optional[int] = None
     last_eval_at: Optional[int] = None
     post_fill_action: Optional[Dict[str, Any]] = None
+    acquistopulito: bool = False
     status: str = "active"
 
 
@@ -78,6 +107,7 @@ class TrailingBuySpec:
     next_eval_at: Optional[int] = None
     last_eval_at: Optional[int] = None
     post_fill_action: Optional[Dict[str, Any]] = None
+    acquistopulito: bool = False
     status: str = "active"
 
 
@@ -97,6 +127,7 @@ class FunctionSpec:
     next_eval_at: Optional[int] = None
     last_eval_at: Optional[int] = None
     post_fill_action: Optional[Dict[str, Any]] = None
+    acquistopulito: bool = False
     status: str = "active"
 
 
@@ -111,6 +142,7 @@ class OcoSpec:
     tf_minutes: int = 15
     next_eval_at: Optional[int] = None
     last_eval_at: Optional[int] = None
+    acquistopulito: bool = False
     status: str = "active"
 
 
@@ -137,6 +169,8 @@ class TelegramTradingBot:
         self._alert_enabled = False
         self._alert_percent = 0.0
         self._alert_reference_price: Optional[float] = None
+        self._clean_entry_preset = "bilanciato"
+        self._clean_entry_config = self._default_clean_entry_config()
 
         self._last_timeframe_tick = 0.0
         self._last_alert_tick = 0.0
@@ -326,6 +360,100 @@ class TelegramTradingBot:
         if alert_percent:
             self._alert_percent = float(alert_percent)
 
+        preset = (self._storage.get_setting("clean_entry_preset") or "").strip().lower()
+        if preset in CLEAN_ENTRY_PRESETS:
+            self._clean_entry_preset = preset
+            loaded_cfg = dict(CLEAN_ENTRY_PRESETS[preset])
+        else:
+            self._clean_entry_preset = "manuale" if preset else "bilanciato"
+            loaded_cfg = self._default_clean_entry_config()
+
+        setting_map = {
+            "clean_entry_rsi_min": "rsi_min",
+            "clean_entry_adx_min": "adx_min",
+            "clean_entry_required_checks": "required_checks",
+            "clean_entry_require_trend": "require_trend",
+            "clean_entry_require_volume": "require_volume",
+            "clean_entry_require_price_above_ema": "require_price_above_ema",
+        }
+        for setting_key, cfg_key in setting_map.items():
+            raw_value = self._storage.get_setting(setting_key)
+            if raw_value is None:
+                continue
+            loaded_cfg[cfg_key] = raw_value
+        self._clean_entry_config = self._normalize_clean_entry_config(loaded_cfg)
+
+    @staticmethod
+    def _default_clean_entry_config() -> Dict[str, Any]:
+        return dict(CLEAN_ENTRY_PRESETS["bilanciato"])
+
+    @staticmethod
+    def _parse_bool_like(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        raw = str(value).strip().lower()
+        if raw in {"1", "true", "t", "yes", "y", "si", "s", "on", "abilita"}:
+            return True
+        if raw in {"0", "false", "f", "no", "n", "off", "disabilita"}:
+            return False
+        raise ValueError(f"Valore booleano non valido: {value}")
+
+    def _normalize_clean_entry_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
+        merged = self._default_clean_entry_config()
+        merged.update(cfg or {})
+
+        rsi_min = float(merged.get("rsi_min", 50.0))
+        adx_min = float(merged.get("adx_min", 18.0))
+        required_checks = int(float(merged.get("required_checks", 4)))
+        require_trend = self._parse_bool_like(merged.get("require_trend", True))
+        require_volume = self._parse_bool_like(merged.get("require_volume", True))
+        require_price_above_ema = self._parse_bool_like(merged.get("require_price_above_ema", True))
+
+        enabled_checks = 2 + int(require_trend) + int(require_volume) + int(require_price_above_ema)
+        required_checks = max(1, min(required_checks, enabled_checks))
+
+        return {
+            "rsi_min": rsi_min,
+            "adx_min": adx_min,
+            "required_checks": required_checks,
+            "require_trend": require_trend,
+            "require_volume": require_volume,
+            "require_price_above_ema": require_price_above_ema,
+        }
+
+    def _clean_entry_summary(self, cfg: Optional[Dict[str, Any]] = None) -> str:
+        current = self._normalize_clean_entry_config(cfg or self._clean_entry_config)
+        return (
+            f"setPulito preset={self._clean_entry_preset} | "
+            f"RSI>={current['rsi_min']:.1f} ADX>={current['adx_min']:.1f} checks>={current['required_checks']} | "
+            f"trend={int(current['require_trend'])} volume={int(current['require_volume'])} "
+            f"price>=EMA={int(current['require_price_above_ema'])}"
+        )
+
+    def _persist_clean_entry_settings(self):
+        cfg = self._normalize_clean_entry_config(self._clean_entry_config)
+        self._storage.set_setting("clean_entry_preset", self._clean_entry_preset)
+        self._storage.set_setting("clean_entry_rsi_min", str(cfg["rsi_min"]))
+        self._storage.set_setting("clean_entry_adx_min", str(cfg["adx_min"]))
+        self._storage.set_setting("clean_entry_required_checks", str(cfg["required_checks"]))
+        self._storage.set_setting("clean_entry_require_trend", "1" if cfg["require_trend"] else "0")
+        self._storage.set_setting("clean_entry_require_volume", "1" if cfg["require_volume"] else "0")
+        self._storage.set_setting("clean_entry_require_price_above_ema", "1" if cfg["require_price_above_ema"] else "0")
+        self._storage.append_event(
+            "setting_updated",
+            payload={
+                "clean_entry_preset": self._clean_entry_preset,
+                "clean_entry_config": cfg,
+            },
+        )
+
+    def _apply_clean_entry_preset(self, preset: str):
+        key = preset.strip().lower()
+        if key not in CLEAN_ENTRY_PRESETS:
+            raise ValueError("Preset valido: conservativo, bilanciato, aggressivo")
+        self._clean_entry_preset = key
+        self._clean_entry_config = self._normalize_clean_entry_config(dict(CLEAN_ENTRY_PRESETS[key]))
+
     def _restore_active_orders(self):
         data = self._storage.load_active_orders()
 
@@ -344,6 +472,7 @@ class TelegramTradingBot:
                 next_eval_at=row.get("next_eval_at"),
                 last_eval_at=row.get("last_eval_at"),
                 post_fill_action=self._decode_post_fill_action(row.get("post_fill_action")),
+                acquistopulito=bool(row.get("acquistopulito", 0)),
                 status=row["status"],
             )
             spec.next_eval_at = self._next_boundary_epoch(spec.tf_minutes)
@@ -370,6 +499,7 @@ class TelegramTradingBot:
                     next_eval_at=self._next_boundary_epoch(row.get("tf_minutes", 15)),
                     last_eval_at=None,
                     post_fill_action=self._decode_post_fill_action(row.get("post_fill_action")),
+                    acquistopulito=bool(row.get("acquistopulito", 0)),
                     status=row["status"],
                 )
             self._function_orders.append(spec)
@@ -413,6 +543,7 @@ class TelegramTradingBot:
                         next_eval_at=self._next_boundary_epoch(row.get("tf_minutes", 15)),
                         last_eval_at=None,
                         post_fill_action=self._decode_post_fill_action(row.get("post_fill_action")),
+                        acquistopulito=bool(row.get("acquistopulito", 0)),
                         status=row["status"],
                     )
                 self._trailing_buy_orders.append(spec)
@@ -431,6 +562,7 @@ class TelegramTradingBot:
                 tf_minutes=row.get("tf_minutes", 15),
                 next_eval_at=self._next_boundary_epoch(row.get("tf_minutes", 15)),
                 last_eval_at=None,
+                acquistopulito=bool(row.get("acquistopulito", 0)),
                 status=row["status"],
             )
             self._oco_orders.append(spec)
@@ -457,6 +589,37 @@ class TelegramTradingBot:
         if tf_minutes not in VALID_TF_MINUTES:
             raise ValueError("Timeframe valido: 1,5,15,30,60,120,240,1440")
         return filtered, tf_minutes
+
+    @staticmethod
+    def _extract_acquistopulito(parts: List[str]) -> Tuple[List[str], bool]:
+        """Extract optional clean-entry flag from command tokens.
+
+        Supported tokens:
+        - acquistopulito
+        - acquistopulito=true|false|1|0|si|no
+        """
+        filtered: List[str] = []
+        value: Optional[bool] = None
+        for token in parts:
+            lower = token.lower()
+            if lower == "acquistopulito":
+                if value is not None:
+                    raise ValueError("Flag acquistopulito duplicato")
+                value = True
+                continue
+            if lower.startswith("acquistopulito="):
+                if value is not None:
+                    raise ValueError("Flag acquistopulito duplicato")
+                raw = lower.split("=", 1)[1].strip()
+                if raw in {"1", "true", "si", "yes", "on"}:
+                    value = True
+                elif raw in {"0", "false", "no", "off"}:
+                    value = False
+                else:
+                    raise ValueError("Valore acquistopulito non valido: usa true/false")
+                continue
+            filtered.append(token)
+        return filtered, bool(value)
 
     @staticmethod
     def _decode_post_fill_action(raw: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -582,8 +745,38 @@ class TelegramTradingBot:
     def _settings_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton("⏱️ Timeframe"), KeyboardButton("🚨 Alert")],
-            [KeyboardButton("🔊 Echo"), KeyboardButton("🗑️ Cancella ordine")],
+            [KeyboardButton("🔊 Echo"), KeyboardButton("🧽 setPulito")],
+            [KeyboardButton("🗑️ Cancella ordine")],
             [KeyboardButton("← Indietro")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _set_pulito_mode_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("🛠️ Manuale"), KeyboardButton("⚡ Automatico")],
+            [KeyboardButton("📊 Stato")],
+            [KeyboardButton("Annulla")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _set_pulito_preset_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("Conservativo"), KeyboardButton("Bilanciato")],
+            [KeyboardButton("Aggressivo")],
+            [KeyboardButton("← Indietro"), KeyboardButton("Annulla")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _set_pulito_manual_fields_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("RSI minimo"), KeyboardButton("ADX minimo")],
+            [KeyboardButton("Check minimi"), KeyboardButton("Trend (on/off)")],
+            [KeyboardButton("Volume (on/off)"), KeyboardButton("Prezzo>=EMA (on/off)")],
+            [KeyboardButton("✅ Salva"), KeyboardButton("📊 Stato")],
+            [KeyboardButton("← Indietro"), KeyboardButton("Annulla")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -705,6 +898,32 @@ class TelegramTradingBot:
         if mode == "trailing":
             return f"trail:{value}%"
         return str(value)
+
+    @staticmethod
+    def _parse_set_pulito_preset_choice(normalized: str) -> Optional[str]:
+        if "conserv" in normalized:
+            return "conservativo"
+        if "bilanc" in normalized:
+            return "bilanciato"
+        if "aggress" in normalized:
+            return "aggressivo"
+        return None
+
+    @staticmethod
+    def _parse_set_pulito_manual_field_choice(normalized: str) -> Optional[str]:
+        if "rsi" in normalized:
+            return "rsi_min"
+        if "adx" in normalized:
+            return "adx_min"
+        if "check" in normalized:
+            return "required_checks"
+        if "trend" in normalized:
+            return "require_trend"
+        if "volume" in normalized:
+            return "require_volume"
+        if "prezzo" in normalized or "ema" in normalized:
+            return "require_price_above_ema"
+        return None
 
     async def _show_main_menu(self, update: Update, intro: Optional[str] = None):
         text = intro or "Menu principale: scegli un'azione."
@@ -906,6 +1125,7 @@ class TelegramTradingBot:
             parent_order_id=parent_order_id,
             tf_minutes=tf_minutes,
             next_eval_at=self._next_boundary_epoch(tf_minutes),
+            acquistopulito=False,
             status="active",
         )
         self._storage.save_oco_order(
@@ -919,6 +1139,7 @@ class TelegramTradingBot:
             next_eval_at=oco_spec.next_eval_at,
             last_eval_at=oco_spec.last_eval_at,
             parent_order_id=parent_order_id,
+            acquistopulito=False,
             status=oco_spec.status,
         )
         self._attach_oco_to_engine(oco_spec)
@@ -972,6 +1193,174 @@ class TelegramTradingBot:
                 {"action": post_fill_action, "error": str(exc), "error_type": type(exc).__name__},
             )
             self._queue_message(chat_id, f"Post-fill action fallita per ordine {parent_order_id}: {exc}")
+
+    @staticmethod
+    def _tf_to_binance_interval(tf_minutes: int) -> str:
+        mapping = {
+            1: "1m",
+            5: "5m",
+            15: "15m",
+            30: "30m",
+            60: "1h",
+            120: "2h",
+            240: "4h",
+            1440: "1d",
+        }
+        if tf_minutes not in mapping:
+            raise ValueError(f"Timeframe non supportato: {tf_minutes}")
+        return mapping[tf_minutes]
+
+    def _fetch_ohlcv_for_indicators(self, symbol: str, tf_minutes: int, limit: int = 200) -> pd.DataFrame:
+        client = getattr(self._feed, "_client", None)
+        if client is None:
+            raise RuntimeError("Feed corrente non espone client OHLCV")
+
+        interval = self._tf_to_binance_interval(tf_minutes)
+        rows = client.get_klines(symbol=symbol, interval=interval, limit=max(limit, 100))
+        if not rows:
+            raise RuntimeError(f"Nessuna candela disponibile per {symbol} tf={tf_minutes}")
+
+        trimmed = rows[-limit:]
+        frame = pd.DataFrame(
+            {
+                "timestamp": [r[0] for r in trimmed],
+                "open": [r[1] for r in trimmed],
+                "high": [r[2] for r in trimmed],
+                "low": [r[3] for r in trimmed],
+                "close": [r[4] for r in trimmed],
+                "volume": [r[5] for r in trimmed],
+            }
+        )
+        return frame
+
+    def _evaluate_clean_entry(self, symbol: str, tf_minutes: int, price: float) -> Tuple[bool, str, Dict[str, Any]]:
+        frame = self._fetch_ohlcv_for_indicators(symbol, tf_minutes)
+        indicators = TechnicalIndicators.from_ohlcv(frame).compute_default_set()
+        if indicators.empty:
+            return False, "indicatori_vuoti", {}
+
+        cfg = self._normalize_clean_entry_config(self._clean_entry_config)
+        last_ind = indicators.iloc[-1].to_dict()
+        last_close = float(frame["close"].astype(float).iloc[-1])
+        checks: Dict[str, bool] = {
+            "rsi_ok": (last_ind.get("rsi_14") or 0) >= float(cfg["rsi_min"]),
+            "adx_ok": (last_ind.get("adx_14") or 0) >= float(cfg["adx_min"]),
+        }
+        if cfg["require_trend"]:
+            checks["trend_ok"] = last_close >= float(last_ind.get("ema_20") or last_close)
+        if cfg["require_volume"]:
+            checks["volume_ok"] = float(frame["volume"].astype(float).iloc[-1]) >= float(last_ind.get("volume_ma_20") or 0)
+        if cfg["require_price_above_ema"]:
+            checks["price_ok"] = price >= float(last_ind.get("ema_20") or price)
+
+        passed_checks = sum(1 for ok in checks.values() if ok)
+        passed = passed_checks >= int(cfg["required_checks"])
+
+        snapshot = {
+            "close": last_close,
+            "rsi_14": last_ind.get("rsi_14"),
+            "adx_14": last_ind.get("adx_14"),
+            "ema_20": last_ind.get("ema_20"),
+            "volume_ma_20": last_ind.get("volume_ma_20"),
+            "config": cfg,
+            "checks": checks,
+            "passed_checks": passed_checks,
+        }
+        return passed, "ok" if passed else "criteria_not_met", snapshot
+
+    def _should_execute_clean_entry(
+        self,
+        *,
+        order_id: int,
+        symbol: str,
+        tf_minutes: int,
+        side: str,
+        price: float,
+        acquistopulito: bool,
+        context: str,
+    ) -> bool:
+        if not acquistopulito or side != "buy":
+            return True
+
+        try:
+            passed, reason, snapshot = self._evaluate_clean_entry(symbol=symbol, tf_minutes=tf_minutes, price=price)
+            self._storage.append_event(
+                "clean_entry_check",
+                order_id,
+                {
+                    "context": context,
+                    "symbol": symbol,
+                    "tf_minutes": tf_minutes,
+                    "price": price,
+                    "passed": passed,
+                    "reason": reason,
+                    **snapshot,
+                },
+            )
+            return passed
+        except Exception as exc:
+            self._storage.append_event(
+                "clean_entry_error",
+                order_id,
+                {
+                    "context": context,
+                    "symbol": symbol,
+                    "tf_minutes": tf_minutes,
+                    "price": price,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            log.error("Errore clean-entry ordine %s: %s", order_id, exc)
+            return False
+
+    def _rearm_simple_order_after_clean_block(self, spec: SimpleOrderSpec):
+        spec.next_eval_at = self._next_boundary_epoch(spec.tf_minutes)
+        self._attach_simple_to_engine(spec)
+        self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, spec.last_eval_at)
+
+    def _rearm_oco_leg_after_clean_block(self, oco_spec: OcoSpec, leg_spec: Dict[str, Any]):
+        leg_index = int(leg_spec.get("leg_index"))
+        core_id = int(leg_spec.get("core_order_id") or -(oco_spec.order_id * 10 + leg_index))
+
+        side = (leg_spec.get("side") or oco_spec.side).lower()
+        ordertype = leg_spec.get("ordertype")
+        if ordertype == "market":
+            trigger = Trigger(leg_index, lambda p: True, f"market leg {leg_index}")
+        else:
+            if side == "buy":
+                if ordertype == "limit":
+                    trigger = self._build_trigger(leg_index, "<", leg_spec.get("price"))
+                else:
+                    trigger = self._build_trigger(leg_index, ">", leg_spec.get("stop_price"))
+            else:
+                if ordertype == "limit":
+                    trigger = self._build_trigger(leg_index, ">", leg_spec.get("price"))
+                else:
+                    trigger = self._build_trigger(leg_index, "<", leg_spec.get("stop_price"))
+
+        action_id = self._next_action_id
+        self._next_action_id += 1
+        action = Action(
+            id=action_id,
+            description=f"OCO {oco_spec.order_id} leg{leg_index}",
+            execute=lambda p, o_id=oco_spec.order_id, l_idx=leg_index, l_spec=leg_spec: self._on_oco_leg_fired(o_id, l_idx, l_spec, p),
+        )
+        order_obj = Order(
+            id=core_id,
+            symbol=oco_spec.symbol,
+            triggers=[trigger],
+            action=action,
+            behavior=OrderBehavior.CANCEL_ON_FIRE,
+            tf_minutes=oco_spec.tf_minutes,
+            next_eval_at=float(self._next_boundary_epoch(oco_spec.tf_minutes)),
+            last_eval_at=float(time.time()),
+        )
+        self._manager.add_order(order_obj)
+        leg_spec["core_order_id"] = core_id
+        leg_spec["status"] = "waiting"
+        self._storage.update_oco_leg_core_order_id(oco_spec.order_id, leg_index, core_id)
+        self._storage.update_oco_leg_status(oco_spec.order_id, leg_index, "waiting")
 
     def _build_trigger(self, trigger_id: int, op: str, threshold: float) -> Trigger:
         if op == "<":
@@ -1201,6 +1590,23 @@ class TelegramTradingBot:
         if qty <= 0:
             raise ValueError(f"Qty non valida per OCO leg {leg_index}: {qty}")
 
+        if not self._should_execute_clean_entry(
+            order_id=order_id,
+            symbol=oco_spec.symbol,
+            tf_minutes=oco_spec.tf_minutes,
+            side=leg_side,
+            price=price,
+            acquistopulito=oco_spec.acquistopulito,
+            context="oco_leg_fired",
+        ):
+            self._storage.append_event(
+                "clean_entry_blocked",
+                order_id,
+                {"context": "oco_leg_fired", "leg_index": leg_index, "side": leg_side, "price": price},
+            )
+            self._rearm_oco_leg_after_clean_block(oco_spec, leg_spec)
+            return
+
         try:
             exchange_resp = self._execute_market_order_on_exchange(leg_side, symbol, qty)
             self._finalize_oco_leg_filled(oco_spec, leg_index, price, symbol, exchange_resp)
@@ -1218,6 +1624,24 @@ class TelegramTradingBot:
     def _on_simple_fired(self, spec: SimpleOrderSpec, price: float):
         if spec.status != "active":
             return
+
+        if not self._should_execute_clean_entry(
+            order_id=spec.order_id,
+            symbol=spec.symbol,
+            tf_minutes=spec.tf_minutes,
+            side=spec.side,
+            price=price,
+            acquistopulito=spec.acquistopulito,
+            context="simple_fired",
+        ):
+            self._storage.append_event(
+                "clean_entry_blocked",
+                spec.order_id,
+                {"context": "simple_fired", "side": spec.side, "price": price},
+            )
+            self._rearm_simple_order_after_clean_block(spec)
+            return
+
         verb = "Vendita" if spec.side == "sell" else "Acquisto"
         symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
 
@@ -1295,6 +1719,7 @@ class TelegramTradingBot:
             "/t MINUTI - default tf nuovi ordini (1,5,15,30,60,120,240,1440)\n"
             "/a 0|1 [PERCENT] - alert BTCUSDT\n"
             "/e 0|1 - echo prezzi\n"
+            "/setpulito [preset|manuale|reset] - config globale clean-entry\n"
             "/o - lista ordini con order_id\n"
             "/account - riepilogo account Binance Spot\n"
             "/c ORDER_ID | /c a - cancella"
@@ -1313,6 +1738,7 @@ class TelegramTradingBot:
             f"- Alert abilitato: {self._alert_enabled}",
             f"- Alert percent: {self._alert_percent}",
             f"- Alert reference price: {self._alert_reference_price}",
+            f"- {self._clean_entry_summary()}",
             f"- Ordini attivi: sell={len(self._sell_orders)} buy={len(self._buy_orders)} function={len(self._function_orders)} trailing_sell={len(self._trailing_sell_orders)} trailing_buy={len(self._trailing_buy_orders)} oco={oco_count}",
             f"- Trailing SELL linked a OCO attivi: {linked_trailing_count}",
         ]
@@ -1400,6 +1826,14 @@ class TelegramTradingBot:
             self._set_ui_state(context, "set_echo", {})
             await self._send(update, "Echo prezzi: scegli azione", reply_markup=self._echo_alert_keyboard())
             return
+        if "setpulito" in tokens or ("set" in tokens and "pulito" in tokens):
+            self._set_ui_state(context, "set_pulito_mode", {})
+            await self._send(
+                update,
+                f"Config setPulito. {self._clean_entry_summary()}\nScegli Modalita.",
+                reply_markup=self._set_pulito_mode_keyboard(),
+            )
+            return
         if lowered == "cancella ordine":
             self._set_ui_state(context, "cancel_order", {})
             await self._send(
@@ -1478,16 +1912,30 @@ class TelegramTradingBot:
                 tf = self._parse_tf_choice(text)
                 draft["tf"] = tf
                 if draft.get("side") == "buy":
-                    self._set_ui_state(context, "simple_post_fill_choice", draft)
-                    await self._send(update, "Vuoi configurare Auto OCO post-fill?", reply_markup=self._yes_no_keyboard())
+                    self._set_ui_state(context, "simple_clean_entry_choice", draft)
+                    await self._send(update, "Attivare acquistopulito per questo BUY?", reply_markup=self._yes_no_keyboard())
                 else:
                     draft["post_fill_action"] = None
+                    draft["acquistopulito"] = False
                     self._set_ui_state(context, "simple_confirm", draft)
                     await self._send(
                         update,
                         f"Confermi ordine {draft['side']} su {draft['symbol']}?",
                         reply_markup=self._confirm_keyboard(),
                     )
+                return True
+            if state == "simple_clean_entry_choice":
+                if normalized == "si":
+                    draft["acquistopulito"] = True
+                    self._set_ui_state(context, "simple_post_fill_choice", draft)
+                    await self._send(update, "Vuoi configurare Auto OCO post-fill?", reply_markup=self._yes_no_keyboard())
+                    return True
+                if normalized == "no":
+                    draft["acquistopulito"] = False
+                    self._set_ui_state(context, "simple_post_fill_choice", draft)
+                    await self._send(update, "Vuoi configurare Auto OCO post-fill?", reply_markup=self._yes_no_keyboard())
+                    return True
+                await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "simple_post_fill_choice":
                 if normalized == "si":
@@ -1562,6 +2010,8 @@ class TelegramTradingBot:
                 if draft.get("hook"):
                     parts.append(f"@{draft['hook']}")
                 parts.append(f"tf={draft['tf']}")
+                if draft.get("acquistopulito"):
+                    parts.append("acquistopulito")
                 if draft.get("post_fill_action"):
                     parts.append(self._post_fill_action_to_token(draft["post_fill_action"]))
                 await self._cmd_simple(update, parts, side=draft["side"])
@@ -1632,8 +2082,21 @@ class TelegramTradingBot:
                 return True
             if state == "function_tf":
                 draft["tf"] = self._parse_tf_choice(text)
-                self._set_ui_state(context, "function_post_fill_choice", draft)
-                await self._send(update, "Vuoi configurare Auto OCO post-fill?", reply_markup=self._yes_no_keyboard())
+                self._set_ui_state(context, "function_clean_entry_choice", draft)
+                await self._send(update, "Attivare acquistopulito per questo FUNCTION buy?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "function_clean_entry_choice":
+                if normalized == "si":
+                    draft["acquistopulito"] = True
+                    self._set_ui_state(context, "function_post_fill_choice", draft)
+                    await self._send(update, "Vuoi configurare Auto OCO post-fill?", reply_markup=self._yes_no_keyboard())
+                    return True
+                if normalized == "no":
+                    draft["acquistopulito"] = False
+                    self._set_ui_state(context, "function_post_fill_choice", draft)
+                    await self._send(update, "Vuoi configurare Auto OCO post-fill?", reply_markup=self._yes_no_keyboard())
+                    return True
+                await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "function_post_fill_choice":
                 if normalized == "si":
@@ -1709,6 +2172,8 @@ class TelegramTradingBot:
                 if draft.get("hook"):
                     parts.append(f"@{draft['hook']}")
                 parts.append(f"tf={draft['tf']}")
+                if draft.get("acquistopulito"):
+                    parts.append("acquistopulito")
                 if draft.get("post_fill_action"):
                     parts.append(self._post_fill_action_to_token(draft["post_fill_action"]))
                 await self._cmd_f(update, parts)
@@ -1822,8 +2287,21 @@ class TelegramTradingBot:
                 return True
             if state == "tb_tf":
                 draft["tf"] = self._parse_tf_choice(text)
-                self._set_ui_state(context, "tb_post_fill_choice", draft)
-                await self._send(update, "Vuoi configurare Auto OCO post-fill?", reply_markup=self._yes_no_keyboard())
+                self._set_ui_state(context, "tb_clean_entry_choice", draft)
+                await self._send(update, "Attivare acquistopulito per questo TRAILING BUY?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "tb_clean_entry_choice":
+                if normalized == "si":
+                    draft["acquistopulito"] = True
+                    self._set_ui_state(context, "tb_post_fill_choice", draft)
+                    await self._send(update, "Vuoi configurare Auto OCO post-fill?", reply_markup=self._yes_no_keyboard())
+                    return True
+                if normalized == "no":
+                    draft["acquistopulito"] = False
+                    self._set_ui_state(context, "tb_post_fill_choice", draft)
+                    await self._send(update, "Vuoi configurare Auto OCO post-fill?", reply_markup=self._yes_no_keyboard())
+                    return True
+                await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "tb_post_fill_choice":
                 if normalized == "si":
@@ -1889,6 +2367,8 @@ class TelegramTradingBot:
                     await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
                     return True
                 parts = ["/B", draft["symbol"], str(draft["percent"]), str(draft["qty"]), str(draft["limit"]), f"tf={draft['tf']}"]
+                if draft.get("acquistopulito"):
+                    parts.append("acquistopulito")
                 if draft.get("post_fill_action"):
                     parts.append(self._post_fill_action_to_token(draft["post_fill_action"]))
                 await self._cmd_B(update, parts)
@@ -1913,8 +2393,26 @@ class TelegramTradingBot:
                     return True
                 draft["side"] = normalized
                 draft["legs"] = []
+                if normalized == "buy":
+                    self._set_ui_state(context, "oco_clean_entry_choice", draft)
+                    await self._send(update, "Attivare acquistopulito per questo OCO buy?", reply_markup=self._yes_no_keyboard())
+                    return True
+                draft["acquistopulito"] = False
                 self._set_ui_state(context, "oco_leg1_type", draft)
                 await self._send(update, "Leg 1: scegli tipo (limit/stop_limit/market)", reply_markup=self._oco_type_keyboard())
+                return True
+            if state == "oco_clean_entry_choice":
+                if normalized == "si":
+                    draft["acquistopulito"] = True
+                    self._set_ui_state(context, "oco_leg1_type", draft)
+                    await self._send(update, "Leg 1: scegli tipo (limit/stop_limit/market)", reply_markup=self._oco_type_keyboard())
+                    return True
+                if normalized == "no":
+                    draft["acquistopulito"] = False
+                    self._set_ui_state(context, "oco_leg1_type", draft)
+                    await self._send(update, "Leg 1: scegli tipo (limit/stop_limit/market)", reply_markup=self._oco_type_keyboard())
+                    return True
+                await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "oco_leg1_type":
                 if normalized not in {"limit", "stop_limit", "market"}:
@@ -2027,9 +2525,19 @@ class TelegramTradingBot:
                     tf_minutes=tf,
                     next_eval_at=self._next_boundary_epoch(tf),
                     last_eval_at=None,
+                    acquistopulito=bool(draft.get("acquistopulito", False)),
                     status="active",
                 )
-                oco_spec = OcoSpec(order_id=order_id, symbol=draft["symbol"], side=draft["side"], legs=legs, chat_id=chat_id, parent_order_id=None, tf_minutes=tf)
+                oco_spec = OcoSpec(
+                    order_id=order_id,
+                    symbol=draft["symbol"],
+                    side=draft["side"],
+                    legs=legs,
+                    chat_id=chat_id,
+                    parent_order_id=None,
+                    tf_minutes=tf,
+                    acquistopulito=bool(draft.get("acquistopulito", False)),
+                )
                 # keep in-memory record for UI and lifecycle operations
                 if not hasattr(self, "_oco_orders"):
                     self._oco_orders = []
@@ -2039,6 +2547,130 @@ class TelegramTradingBot:
                 await self._send(update, f"OCO {order_id} creato e attivato.")
                 self._clear_ui_state(context)
                 await self._show_orders_menu(update)
+                return True
+
+            if state == "set_pulito_mode":
+                if "manual" in normalized:
+                    draft = dict(self._clean_entry_config)
+                    self._set_ui_state(context, "set_pulito_manual_field", draft)
+                    await self._send(
+                        update,
+                        f"setPulito Manuale. {self._clean_entry_summary(draft)}",
+                        reply_markup=self._set_pulito_manual_fields_keyboard(),
+                    )
+                    return True
+                if "automatic" in normalized:
+                    self._set_ui_state(context, "set_pulito_preset", {})
+                    await self._send(
+                        update,
+                        "setPulito Automatico: scegli preset.",
+                        reply_markup=self._set_pulito_preset_keyboard(),
+                    )
+                    return True
+                if "stato" in normalized:
+                    await self._send(
+                        update,
+                        self._clean_entry_summary(),
+                        reply_markup=self._set_pulito_mode_keyboard(),
+                    )
+                    return True
+                await self._send(update, "Scegli Manuale, Automatico o Stato", reply_markup=self._set_pulito_mode_keyboard())
+                return True
+
+            if state == "set_pulito_preset":
+                if normalized == "indietro":
+                    self._set_ui_state(context, "set_pulito_mode", {})
+                    await self._send(update, "Config setPulito: scegli modalita.", reply_markup=self._set_pulito_mode_keyboard())
+                    return True
+                preset = self._parse_set_pulito_preset_choice(normalized)
+                if preset is None:
+                    await self._send(
+                        update,
+                        "Preset non valido: scegli Conservativo, Bilanciato o Aggressivo",
+                        reply_markup=self._set_pulito_preset_keyboard(),
+                    )
+                    return True
+                self._apply_clean_entry_preset(preset)
+                self._persist_clean_entry_settings()
+                await self._send(update, f"setPulito aggiornato: {self._clean_entry_summary()}")
+                self._clear_ui_state(context)
+                await self._show_settings_menu(update)
+                return True
+
+            if state == "set_pulito_manual_field":
+                if normalized in {"salva", "fine"}:
+                    self._clean_entry_preset = "manuale"
+                    self._clean_entry_config = self._normalize_clean_entry_config(draft)
+                    self._persist_clean_entry_settings()
+                    await self._send(update, f"setPulito salvato: {self._clean_entry_summary()}")
+                    self._clear_ui_state(context)
+                    await self._show_settings_menu(update)
+                    return True
+                if normalized == "indietro":
+                    self._set_ui_state(context, "set_pulito_mode", {})
+                    await self._send(update, "Config setPulito: scegli modalita.", reply_markup=self._set_pulito_mode_keyboard())
+                    return True
+                if "stato" in normalized:
+                    await self._send(
+                        update,
+                        self._clean_entry_summary(draft),
+                        reply_markup=self._set_pulito_manual_fields_keyboard(),
+                    )
+                    return True
+                field = self._parse_set_pulito_manual_field_choice(normalized)
+                if field is None:
+                    await self._send(
+                        update,
+                        "Campo non valido: scegli uno dei bottoni manuali",
+                        reply_markup=self._set_pulito_manual_fields_keyboard(),
+                    )
+                    return True
+                draft["edit_field"] = field
+                self._set_ui_state(context, "set_pulito_manual_value", draft)
+                hints = {
+                    "rsi_min": "Inserisci RSI minimo (es. 50)",
+                    "adx_min": "Inserisci ADX minimo (es. 18)",
+                    "required_checks": "Inserisci check minimi (1-5)",
+                    "require_trend": "Inserisci 1/0 (oppure si/no) per trend",
+                    "require_volume": "Inserisci 1/0 (oppure si/no) per volume",
+                    "require_price_above_ema": "Inserisci 1/0 (oppure si/no) per price>=EMA",
+                }
+                await self._send(update, hints[field], reply_markup=self._cancel_keyboard())
+                return True
+
+            if state == "set_pulito_manual_value":
+                field = str(draft.get("edit_field") or "")
+                if field not in {
+                    "rsi_min",
+                    "adx_min",
+                    "required_checks",
+                    "require_trend",
+                    "require_volume",
+                    "require_price_above_ema",
+                }:
+                    self._set_ui_state(context, "set_pulito_manual_field", draft)
+                    await self._send(
+                        update,
+                        "Campo manuale non valido, riprova.",
+                        reply_markup=self._set_pulito_manual_fields_keyboard(),
+                    )
+                    return True
+
+                if field in {"rsi_min", "adx_min"}:
+                    draft[field] = float(text)
+                elif field == "required_checks":
+                    draft[field] = int(float(text))
+                else:
+                    draft[field] = self._parse_bool_like(text)
+
+                draft.pop("edit_field", None)
+                draft = self._normalize_clean_entry_config(draft)
+                self._set_ui_state(context, "set_pulito_manual_field", draft)
+                await self._send(
+                    update,
+                    f"Valore aggiornato. {self._clean_entry_summary(draft)}",
+                    reply_markup=self._set_pulito_manual_fields_keyboard(),
+                )
                 return True
 
             if state == "set_timeframe":
@@ -2134,6 +2766,8 @@ class TelegramTradingBot:
                 await self._cmd_a(update, parts)
             elif cmd == "/e":
                 await self._cmd_e(update, parts)
+            elif cmd == "/setpulito":
+                await self._cmd_setpulito(update, parts)
             elif cmd == "/o":
                 await self._cmd_o(update)
             elif cmd == "/account":
@@ -2260,6 +2894,7 @@ class TelegramTradingBot:
     async def _cmd_simple(self, update: Update, parts: List[str], side: str):
         parts, tf_minutes = self._extract_tf(parts)
         parts, post_fill_action = self._extract_post_fill_action(parts)
+        parts, acquistopulito = self._extract_acquistopulito(parts)
         symbol, op, trigger_val, qty, hook = self._parse_simple_order(parts)
         ok, message = self._validate_spot_symbol(symbol)
         if not ok:
@@ -2270,6 +2905,8 @@ class TelegramTradingBot:
                 raise ValueError(message)
         if side != "buy" and post_fill_action is not None:
             raise ValueError("post_fill_action supportata solo su ordini buy")
+        if side != "buy" and acquistopulito:
+            raise ValueError("acquistopulito supportato solo su ordini buy")
         chat_id = update.effective_chat.id
         order_id = self._new_order_id()
         next_eval_at = self._next_boundary_epoch(tf_minutes)
@@ -2286,6 +2923,7 @@ class TelegramTradingBot:
             tf_minutes=tf_minutes,
             next_eval_at=next_eval_at,
             post_fill_action=post_fill_action,
+            acquistopulito=acquistopulito,
         )
         self._attach_simple_to_engine(spec)
 
@@ -2303,9 +2941,14 @@ class TelegramTradingBot:
             next_eval_at=spec.next_eval_at,
             last_eval_at=spec.last_eval_at,
             post_fill_action=spec.post_fill_action,
+            acquistopulito=spec.acquistopulito,
             status=spec.status,
         )
-        self._storage.append_event("simple_created", spec.order_id, {"side": side, "symbol": symbol, "tf": tf_minutes})
+        self._storage.append_event(
+            "simple_created",
+            spec.order_id,
+            {"side": side, "symbol": symbol, "tf": tf_minutes, "acquistopulito": spec.acquistopulito},
+        )
 
         if side == "sell":
             self._sell_orders.append(spec)
@@ -2317,6 +2960,7 @@ class TelegramTradingBot:
     async def _cmd_f(self, update: Update, parts: List[str]):
         parts, tf_minutes = self._extract_tf(parts)
         parts, post_fill_action = self._extract_post_fill_action(parts)
+        parts, acquistopulito = self._extract_acquistopulito(parts)
         if len(parts) < 6:
             raise ValueError("Formato: /f SYMBOL <|> TRIGGER QTY PERCENT [@PAIRHOOK]")
 
@@ -2353,6 +2997,7 @@ class TelegramTradingBot:
             self._next_boundary_epoch(tf_minutes),
             None,
             post_fill_action,
+            acquistopulito,
         )
         self._function_orders.append(spec)
         self._poller.add_symbol(symbol)
@@ -2374,9 +3019,14 @@ class TelegramTradingBot:
             next_eval_at=spec.next_eval_at,
             last_eval_at=spec.last_eval_at,
             post_fill_action=spec.post_fill_action,
+            acquistopulito=spec.acquistopulito,
             status="active",
         )
-        self._storage.append_event("function_created", order_id, {"symbol": symbol, "tf": tf_minutes})
+        self._storage.append_event(
+            "function_created",
+            order_id,
+            {"symbol": symbol, "tf": tf_minutes, "acquistopulito": spec.acquistopulito},
+        )
         exec_symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
         await self._send(update, f"Ordine function inserito: order_id={order_id} watch={spec.symbol} exec={exec_symbol}")
 
@@ -2451,6 +3101,7 @@ class TelegramTradingBot:
     async def _cmd_B(self, update: Update, parts: List[str]):
         parts, tf_minutes = self._extract_tf(parts)
         parts, post_fill_action = self._extract_post_fill_action(parts)
+        parts, acquistopulito = self._extract_acquistopulito(parts)
         if len(parts) < 5:
             raise ValueError("Formato: /B SYMBOL PERCENT QTY LIMIT")
 
@@ -2478,6 +3129,7 @@ class TelegramTradingBot:
             self._next_boundary_epoch(tf_minutes),
             None,
             post_fill_action,
+            acquistopulito,
         )
         self._init_trailing_buy(spec)
         self._trailing_buy_orders.append(spec)
@@ -2500,9 +3152,14 @@ class TelegramTradingBot:
             next_eval_at=spec.next_eval_at,
             last_eval_at=spec.last_eval_at,
             post_fill_action=spec.post_fill_action,
+            acquistopulito=spec.acquistopulito,
             status=spec.status,
         )
-        self._storage.append_event("trailing_buy_created", order_id, {"symbol": symbol, "tf": tf_minutes})
+        self._storage.append_event(
+            "trailing_buy_created",
+            order_id,
+            {"symbol": symbol, "tf": tf_minutes, "acquistopulito": spec.acquistopulito},
+        )
         await self._send(update, f"Trailing buy inserito: order_id={order_id}")
 
     async def _cmd_t(self, update: Update, parts: List[str]):
@@ -2551,6 +3208,84 @@ class TelegramTradingBot:
         self._storage.append_event("setting_updated", payload={"echo_enabled": self._echo_enabled})
         await self._send(update, f"Echo impostato a {self._echo_enabled}")
 
+    async def _cmd_setpulito(self, update: Update, parts: List[str]):
+        usage = (
+            "Formato: /setpulito [preset NOME|manuale key=value...|reset]\n"
+            "Preset disponibili: conservativo, bilanciato, aggressivo\n"
+            "Chiavi manuale: rsi, adx, checks, trend, volume, priceema"
+        )
+        if len(parts) == 1:
+            await self._send(update, f"{self._clean_entry_summary()}\n{usage}")
+            return
+
+        raw_mode = parts[1].strip().lower()
+        mode = raw_mode.replace("_", "")
+
+        if mode in {"reset", "default"}:
+            self._apply_clean_entry_preset("bilanciato")
+            self._persist_clean_entry_settings()
+            await self._send(update, f"setPulito resettato: {self._clean_entry_summary()}")
+            return
+
+        if mode in CLEAN_ENTRY_PRESETS:
+            self._apply_clean_entry_preset(mode)
+            self._persist_clean_entry_settings()
+            await self._send(update, f"setPulito aggiornato: {self._clean_entry_summary()}")
+            return
+
+        if mode in {"preset", "auto", "automatico"}:
+            if len(parts) < 3:
+                raise ValueError("Preset mancante. Usa: /setpulito preset conservativo|bilanciato|aggressivo")
+            self._apply_clean_entry_preset(parts[2])
+            self._persist_clean_entry_settings()
+            await self._send(update, f"setPulito aggiornato: {self._clean_entry_summary()}")
+            return
+
+        tokens = parts[2:] if mode == "manuale" else parts[1:]
+        if not tokens:
+            raise ValueError(usage)
+
+        aliases = {
+            "rsi": "rsi_min",
+            "rsimin": "rsi_min",
+            "rsi_min": "rsi_min",
+            "adx": "adx_min",
+            "adxmin": "adx_min",
+            "adx_min": "adx_min",
+            "checks": "required_checks",
+            "check": "required_checks",
+            "required_checks": "required_checks",
+            "minchecks": "required_checks",
+            "trend": "require_trend",
+            "volume": "require_volume",
+            "price": "require_price_above_ema",
+            "priceema": "require_price_above_ema",
+            "price_above_ema": "require_price_above_ema",
+            "require_price_above_ema": "require_price_above_ema",
+        }
+        updates: Dict[str, Any] = {}
+        for token in tokens:
+            if "=" not in token:
+                raise ValueError(f"Token non valido: {token}. Usa key=value")
+            raw_key, raw_value = token.split("=", 1)
+            key = aliases.get(raw_key.strip().lower().replace("-", "").replace(" ", ""))
+            if key is None:
+                raise ValueError(f"Chiave non supportata: {raw_key}")
+            value = raw_value.strip()
+            if key in {"rsi_min", "adx_min"}:
+                updates[key] = float(value)
+            elif key == "required_checks":
+                updates[key] = int(float(value))
+            else:
+                updates[key] = self._parse_bool_like(value)
+
+        self._clean_entry_preset = "manuale"
+        manual_cfg = dict(self._clean_entry_config)
+        manual_cfg.update(updates)
+        self._clean_entry_config = self._normalize_clean_entry_config(manual_cfg)
+        self._persist_clean_entry_settings()
+        await self._send(update, f"setPulito aggiornato: {self._clean_entry_summary()}")
+
     async def _cmd_o(self, update: Update):
         def _post_fill_label(spec: Optional[Dict[str, Any]]) -> str:
             if not spec:
@@ -2579,12 +3314,12 @@ class TelegramTradingBot:
         for b in self._buy_orders:
             if b.status != "active":
                 continue
-            lines.append(f"{b.order_id} watch={b.symbol} exec={self._exec_symbol(b.symbol, b.hook_symbol)} {b.op} {b.trigger} qty={b.qty} tf={b.tf_minutes}m next={_human_time(b.next_eval_at)} post_fill={_post_fill_label(b.post_fill_action)} status={b.status}")
+            lines.append(f"{b.order_id} watch={b.symbol} exec={self._exec_symbol(b.symbol, b.hook_symbol)} {b.op} {b.trigger} qty={b.qty} tf={b.tf_minutes}m next={_human_time(b.next_eval_at)} post_fill={_post_fill_label(b.post_fill_action)} clean={b.acquistopulito} status={b.status}")
         lines.append("FUNCTION:")
         for f in self._function_orders:
             if f.status != "active":
                 continue
-            lines.append(f"{f.order_id} watch={f.symbol} exec={self._exec_symbol(f.symbol, f.hook_symbol)} {f.op} {f.trigger} qty={f.qty} pct={f.percent} tf={f.tf_minutes}m next={_human_time(f.next_eval_at)} post_fill={_post_fill_label(f.post_fill_action)} status={f.status}")
+            lines.append(f"{f.order_id} watch={f.symbol} exec={self._exec_symbol(f.symbol, f.hook_symbol)} {f.op} {f.trigger} qty={f.qty} pct={f.percent} tf={f.tf_minutes}m next={_human_time(f.next_eval_at)} post_fill={_post_fill_label(f.post_fill_action)} clean={f.acquistopulito} status={f.status}")
         lines.append("TRAILING SELL:")
         for t in self._trailing_sell_orders:
             if t.status != "active":
@@ -2597,7 +3332,7 @@ class TelegramTradingBot:
         for t in self._trailing_buy_orders:
             if t.status != "active":
                 continue
-            lines.append(f"{t.order_id} {t.symbol} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={_human_time(t.next_eval_at)} post_fill={_post_fill_label(t.post_fill_action)} status={t.status}")
+            lines.append(f"{t.order_id} {t.symbol} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={_human_time(t.next_eval_at)} post_fill={_post_fill_label(t.post_fill_action)} clean={t.acquistopulito} status={t.status}")
         # OCO orders
         lines.append("OCO:")
         for o in getattr(self, "_oco_orders", []):
@@ -2618,7 +3353,7 @@ class TelegramTradingBot:
                         parts.append(f"core={l.get('core_order_id')}")
                     legs_text.append("(" + ", ".join(parts) + ")")
                 legs_joined = " ".join(legs_text)
-                lines.append(f"{o.order_id} watch={o.symbol} side={o.side} parent={o.parent_order_id} legs={legs_joined} tf={o.tf_minutes}m next={_human_time(o.next_eval_at)} status={o.status}")
+                lines.append(f"{o.order_id} watch={o.symbol} side={o.side} parent={o.parent_order_id} legs={legs_joined} tf={o.tf_minutes}m next={_human_time(o.next_eval_at)} clean={o.acquistopulito} status={o.status}")
             except Exception:
                 lines.append(str(o))
         lines.append(f"Timeframe={self._timeframe_seconds}s echo={self._echo_enabled} alert={self._alert_enabled}")
@@ -2727,9 +3462,29 @@ class TelegramTradingBot:
 
             trigger_hit = (spec.op == "<" and spec.prev_price > spec.trigger and price < spec.trigger)
             trigger_hit = trigger_hit or (spec.op == ">" and spec.prev_price < spec.trigger and price > spec.trigger)
+            if spec.acquistopulito and not spec.bought:
+                in_trigger_zone = (spec.op == "<" and price < spec.trigger) or (spec.op == ">" and price > spec.trigger)
+                trigger_hit = trigger_hit or in_trigger_zone
 
             if trigger_hit and not spec.bought:
                 exec_symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
+                if not self._should_execute_clean_entry(
+                    order_id=spec.order_id,
+                    symbol=spec.symbol,
+                    tf_minutes=spec.tf_minutes,
+                    side="buy",
+                    price=price,
+                    acquistopulito=spec.acquistopulito,
+                    context="function_buy_trigger",
+                ):
+                    self._storage.append_event(
+                        "clean_entry_blocked",
+                        spec.order_id,
+                        {"context": "function_buy_trigger", "side": "buy", "price": price},
+                    )
+                    spec.prev_price = price
+                    self._storage.update_function_runtime(spec.order_id, spec.bought, spec.prev_price)
+                    continue
                 try:
                     exchange_resp = self._execute_market_order_on_exchange("buy", exec_symbol, spec.qty)
                     spec.bought = True
@@ -2909,6 +3664,22 @@ class TelegramTradingBot:
                     spec.min_price = price
                 trigger_price = spec.min_price * (1.0 + (spec.percent / 100.0))
                 if price > trigger_price:
+                    if not self._should_execute_clean_entry(
+                        order_id=spec.order_id,
+                        symbol=spec.symbol,
+                        tf_minutes=spec.tf_minutes,
+                        side="buy",
+                        price=price,
+                        acquistopulito=spec.acquistopulito,
+                        context="trailing_buy_trigger",
+                    ):
+                        self._storage.append_event(
+                            "clean_entry_blocked",
+                            spec.order_id,
+                            {"context": "trailing_buy_trigger", "side": "buy", "price": price},
+                        )
+                        self._storage.update_trailing_runtime(spec.order_id, spec.armed, None, spec.min_price, spec.arm_op)
+                        continue
                     try:
                         exchange_resp = self._execute_market_order_on_exchange("buy", spec.symbol, spec.qty)
                         spec.status = "filled"
