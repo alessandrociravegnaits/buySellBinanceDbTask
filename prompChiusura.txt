@@ -6,4 +6,4 @@ Salva sempre i riassunti di sessione suddivisi per argomento  in .copilot-memory
 . opzione 2
 
 . lui: 
-..salva in 99-inizioSessioneVettoriale
+aggiorna lanceDb

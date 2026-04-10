@@ -14,6 +14,7 @@ Questa cartella contiene riassunti di sessione e note operative in formato Markd
 - `03-operazioni-run.md`: bootstrap, run, test, comandi utili.
 - `04-ai-handoff-migrazione.md`: processo AI/handoff e passaggio macchina.
 - `05-sessione-corrente.md`: riassunto attività recenti.
+- `06-ordinepulito-acquistopulito.md`: configurazione globale clean-entry e gating buy/OCO.
 
 ## Nota preferenza utente
-Da questa sessione in poi, i riassunti verranno salvati qui in `.copilot-memory/`, in formato MD e suddivisi per argomento.
+I riassunti di sessione vanno sempre salvati qui in `.copilot-memory/`, in formato MD e suddivisi per argomento.
