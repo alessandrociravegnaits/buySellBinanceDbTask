@@ -1,6 +1,8 @@
 import asyncio
 import os
 
+from core import build_engine
+from price_feeds import MockPriceFeed
 from telegram_bot import (
     FunctionSpec,
     OcoSpec,
@@ -16,6 +18,69 @@ def _make_bot(tmp_path):
     archive_dir = str(tmp_path / "archive")
     os.makedirs(archive_dir, exist_ok=True)
     return TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+
+
+class _DummyChat:
+    def __init__(self, chat_id=1):
+        self.id = chat_id
+
+
+class _DummyUpdate:
+    def __init__(self, chat_id=1):
+        self.effective_chat = _DummyChat(chat_id)
+
+
+class _DummyContext:
+    def __init__(self):
+        self.user_data = {}
+
+
+def test_trailing_buy_wizard_asks_for_limit_choice(tmp_path):
+    bot = _make_bot(tmp_path)
+    captured = {"text": ""}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["text"] = text
+
+    bot._send = _capture_send
+
+    context = _DummyContext()
+    context.user_data["ui_state"] = "tb_qty"
+    context.user_data["ui_draft"] = {"symbol": "BTCUSDT", "percent": 1.0}
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "0.25"))
+
+    assert context.user_data["ui_state"] == "tb_limit_choice"
+    assert "Vuoi impostare LIMIT?" in captured["text"]
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "No"))
+    assert context.user_data["ui_state"] == "tb_tf"
+    assert context.user_data["ui_draft"]["limit"] is None
+
+    bot._storage.close()
+
+
+def test_cmd_B_accepts_missing_limit(tmp_path):
+    bot = _make_bot(tmp_path)
+    bot._validate_spot_symbol = lambda symbol, field_name="SYMBOL": (True, "")
+
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    async def _noop_send(update, text, reply_markup=None):
+        return None
+
+    bot._send = _noop_send
+
+    asyncio.run(bot._cmd_B(_DummyUpdate(), ["/B", "BTCUSDT", "1.0", "0.5", "tf=15"]))
+
+    assert len(bot._trailing_buy_orders) == 1
+    spec = bot._trailing_buy_orders[0]
+    assert spec.limit is None
+    assert spec.armed is True
+
+    bot._storage.close()
 
 
 def test_cancel_order_targets_builds_synthetic_labels(tmp_path):

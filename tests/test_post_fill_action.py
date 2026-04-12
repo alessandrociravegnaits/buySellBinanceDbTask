@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from storage import SQLiteStorage
@@ -32,6 +33,30 @@ def test_extract_post_fill_action_duplicate_raises():
         assert False, "Expected ValueError for duplicate oco spec"
     except ValueError:
         pass
+    finally:
+        bot._storage.close()
+
+
+def test_sell_orders_reject_post_fill_oco_token():
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path="data/test_bot.sqlite3")
+    class _DummyChat:
+        id = 1
+
+    class _DummyUpdate:
+        effective_chat = _DummyChat()
+
+    try:
+        try:
+            asyncio.run(
+                bot._cmd_simple(
+                    update=_DummyUpdate(),
+                    parts=["/s", "BTCUSDT", "<", "67000", "0.001", "oco:tp=3%,sl=1.5%"],
+                    side="sell",
+                )
+            )
+            assert False, "Expected ValueError for sell order with post_fill_action"
+        except ValueError as exc:
+            assert "post_fill_action supportata solo su ordini buy" in str(exc)
     finally:
         bot._storage.close()
 

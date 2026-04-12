@@ -1,9 +1,9 @@
 import os
-import time
-import tempfile
-from price_feeds import MockPriceFeed
-from telegram_bot import TelegramTradingBot, OcoSpec, SimpleOrderSpec
 import sqlite3
+import time
+
+from price_feeds import MockPriceFeed
+from telegram_bot import FunctionSpec, OcoSpec, SimpleOrderSpec, TelegramTradingBot, TrailingBuySpec
 
 
 class FakeExchangeClient:
@@ -224,5 +224,119 @@ def test_auto_oco_independent_modes_tp_trailing_sl_percent(tmp_path):
     sl_status = cur.fetchone()[0]
     assert tp_status == "cancelled"
     assert sl_status == "filled"
+    conn.close()
+    bot._storage.close()
+
+
+def test_function_buy_auto_oco_post_fill_creates_sell_oco(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    bot._exchange_client = FakeExchangeClient()
+    mock_feed = MockPriceFeed(initial_price=99.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    spec = FunctionSpec(
+        order_id=1001,
+        symbol="BTCUSDT",
+        op=">",
+        trigger=100.0,
+        qty=1.0,
+        percent=1.5,
+        chat_id=999,
+        hook_symbol=None,
+        bought=False,
+        prev_price=99.0,
+        tf_minutes=1,
+        next_eval_at=0,
+        last_eval_at=None,
+        post_fill_action={
+            "type": "oco",
+            "tp": {"mode": "percent", "value": 2.0},
+            "sl": {"mode": "percent", "value": 1.0},
+        },
+        acquistopulito=False,
+        status="active",
+    )
+    bot._function_orders = [spec]
+
+    mock_feed.set_price(101.0)
+    bot._eval_function_orders(int(time.time()))
+    time.sleep(0.4)
+
+    assert spec.status == "filled"
+    assert len(bot._oco_orders) == 1
+    oco = bot._oco_orders[0]
+    assert oco.side == "sell"
+    assert oco.symbol == "BTCUSDT"
+    assert len(oco.legs) == 2
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT side FROM order_oco WHERE order_id = ?", (oco.order_id,))
+    row = cur.fetchone()
+    assert row == ("sell",)
+    cur.execute("SELECT status FROM orders WHERE order_id = ?", (oco.order_id,))
+    assert cur.fetchone() == ("active",)
+    conn.close()
+    bot._storage.close()
+
+
+def test_trailing_buy_auto_oco_post_fill_creates_sell_oco(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    bot._exchange_client = FakeExchangeClient()
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    spec = TrailingBuySpec(
+        order_id=1002,
+        symbol="BTCUSDT",
+        qty=1.0,
+        percent=1.0,
+        chat_id=999,
+        limit=98.0,
+        armed=True,
+        min_price=97.0,
+        arm_op="<",
+        tf_minutes=1,
+        next_eval_at=0,
+        last_eval_at=None,
+        post_fill_action={
+            "type": "oco",
+            "tp": {"mode": "percent", "value": 3.0},
+            "sl": {"mode": "trailing", "value": 1.5},
+        },
+        acquistopulito=False,
+        status="active",
+    )
+    bot._trailing_buy_orders = [spec]
+
+    mock_feed.set_price(99.0)
+    bot._eval_trailing_buy(int(time.time()))
+    time.sleep(0.4)
+
+    assert spec.status == "filled"
+    assert len(bot._oco_orders) == 1
+    oco = bot._oco_orders[0]
+    assert oco.side == "sell"
+    assert any(leg.get("ordertype") == "trailing" for leg in oco.legs)
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT side FROM order_oco WHERE order_id = ?", (oco.order_id,))
+    row = cur.fetchone()
+    assert row == ("sell",)
+    cur.execute("SELECT status FROM orders WHERE order_id = ?", (oco.order_id,))
+    assert cur.fetchone() == ("active",)
     conn.close()
     bot._storage.close()

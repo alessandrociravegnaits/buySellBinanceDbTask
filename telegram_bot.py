@@ -99,7 +99,7 @@ class TrailingBuySpec:
     qty: float
     percent: float
     chat_id: int
-    limit: float
+    limit: Optional[float]
     armed: bool = False
     min_price: Optional[float] = None
     arm_op: Optional[str] = None
@@ -2277,8 +2277,20 @@ class TelegramTradingBot:
                 return True
             if state == "tb_qty":
                 draft["qty"] = float(text)
-                self._set_ui_state(context, "tb_limit", draft)
-                await self._send(update, "Inserisci LIMIT", reply_markup=self._cancel_keyboard())
+                self._set_ui_state(context, "tb_limit_choice", draft)
+                await self._send(update, "Vuoi impostare LIMIT?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "tb_limit_choice":
+                if normalized == "si":
+                    self._set_ui_state(context, "tb_limit", draft)
+                    await self._send(update, "Inserisci LIMIT", reply_markup=self._cancel_keyboard())
+                    return True
+                if normalized == "no":
+                    draft["limit"] = None
+                    self._set_ui_state(context, "tb_tf", draft)
+                    await self._send(update, "Seleziona timeframe", reply_markup=self._tf_keyboard())
+                    return True
+                await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "tb_limit":
                 draft["limit"] = float(text)
@@ -2366,7 +2378,10 @@ class TelegramTradingBot:
                 if normalized != "conferma":
                     await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
                     return True
-                parts = ["/B", draft["symbol"], str(draft["percent"]), str(draft["qty"]), str(draft["limit"]), f"tf={draft['tf']}"]
+                parts = ["/B", draft["symbol"], str(draft["percent"]), str(draft["qty"])]
+                if draft.get("limit") is not None:
+                    parts.append(str(draft["limit"]))
+                parts.append(f"tf={draft['tf']}")
                 if draft.get("acquistopulito"):
                     parts.append("acquistopulito")
                 if draft.get("post_fill_action"):
@@ -3102,13 +3117,19 @@ class TelegramTradingBot:
         parts, tf_minutes = self._extract_tf(parts)
         parts, post_fill_action = self._extract_post_fill_action(parts)
         parts, acquistopulito = self._extract_acquistopulito(parts)
-        if len(parts) < 5:
-            raise ValueError("Formato: /B SYMBOL PERCENT QTY LIMIT")
+        if len(parts) < 4:
+            raise ValueError("Formato: /B SYMBOL PERCENT QTY [LIMIT] [@PAIRHOOK]")
 
         symbol = parts[1].upper()
         percent = float(parts[2])
         qty = float(parts[3])
-        limit = float(parts[4])
+        limit = None
+        hook = None
+        for token in parts[4:]:
+            if token.startswith("@"):
+                hook = token[1:].upper()
+            else:
+                limit = float(token)
         ok, message = self._validate_spot_symbol(symbol)
         if not ok:
             raise ValueError(message)
@@ -3134,6 +3155,8 @@ class TelegramTradingBot:
         self._init_trailing_buy(spec)
         self._trailing_buy_orders.append(spec)
         self._poller.add_symbol(symbol)
+        if hook:
+            self._poller.add_symbol(hook)
 
         self._storage.save_trailing_order(
             order_id=spec.order_id,
@@ -3143,7 +3166,7 @@ class TelegramTradingBot:
             qty=spec.qty,
             percent=spec.percent,
             limit_price=spec.limit,
-            hook_symbol=None,
+            hook_symbol=hook,
             armed=spec.armed,
             max_price=None,
             min_price=spec.min_price,
@@ -3158,7 +3181,7 @@ class TelegramTradingBot:
         self._storage.append_event(
             "trailing_buy_created",
             order_id,
-            {"symbol": symbol, "tf": tf_minutes, "acquistopulito": spec.acquistopulito},
+            {"symbol": symbol, "tf": tf_minutes, "limit": spec.limit, "hook_symbol": hook, "acquistopulito": spec.acquistopulito},
         )
         await self._send(update, f"Trailing buy inserito: order_id={order_id}")
 
@@ -3433,6 +3456,10 @@ class TelegramTradingBot:
     def _init_trailing_buy(self, spec: TrailingBuySpec):
         price = self._feed.get_price(spec.symbol, spec.tf_minutes)
         spec.min_price = price
+        if spec.limit is None:
+            spec.armed = True
+            spec.arm_op = None
+            return
         spec.arm_op = "<" if price >= spec.limit else ">"
 
     @staticmethod
@@ -3573,8 +3600,6 @@ class TelegramTradingBot:
             if not self._is_due(spec, now_ts):
                 continue
             price = self._feed.get_price(spec.symbol, spec.tf_minutes)
-            self._mark_evaluated(spec, now_ts)
-
             if not spec.armed and spec.limit is not None:
                 if (spec.arm_op == "<" and price < spec.limit) or (spec.arm_op == ">" and price > spec.limit):
                     spec.armed = True
@@ -3656,7 +3681,10 @@ class TelegramTradingBot:
             self._mark_evaluated(spec, now_ts)
 
             if not spec.armed:
-                if (spec.arm_op == "<" and price < spec.limit) or (spec.arm_op == ">" and price > spec.limit):
+                if spec.limit is None:
+                    spec.armed = True
+                    spec.min_price = price
+                elif (spec.arm_op == "<" and price < spec.limit) or (spec.arm_op == ">" and price > spec.limit):
                     spec.armed = True
                     spec.min_price = price
             else:
