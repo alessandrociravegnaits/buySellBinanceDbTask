@@ -152,3 +152,99 @@ def test_oco_trailing_leg_persistence(tmp_path):
     assert float(row[1]) == 1.5
     conn.close()
     storage.close()
+
+
+def test_btc_alert_liquidate_flag_persistence(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    storage = SQLiteStorage(db_path, archive_dir)
+
+    simple_id = storage.next_order_id()
+    storage.save_simple_order(
+        order_id=simple_id,
+        chat_id=1,
+        side="sell",
+        symbol="BTCUSDT",
+        op=">",
+        trigger_value=70000.0,
+        qty=0.01,
+        hook_symbol=None,
+        core_order_id=simple_id,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        btc_alert_liquidate=True,
+        status="active",
+    )
+
+    function_id = storage.next_order_id()
+    storage.save_function_order(
+        order_id=function_id,
+        chat_id=1,
+        symbol="ETHUSDT",
+        op=">",
+        trigger_value=3000.0,
+        qty=0.25,
+        percent=1.0,
+        hook_symbol=None,
+        bought=False,
+        prev_price=None,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        btc_alert_liquidate=True,
+        status="active",
+    )
+
+    trailing_id = storage.next_order_id()
+    storage.save_trailing_order(
+        order_id=trailing_id,
+        chat_id=1,
+        side="buy",
+        symbol="BNBUSDT",
+        qty=1.0,
+        percent=1.5,
+        limit_price=500.0,
+        hook_symbol=None,
+        armed=False,
+        max_price=None,
+        min_price=500.0,
+        arm_op="<",
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        btc_alert_liquidate=True,
+        status="active",
+    )
+
+    oco_id = storage.next_order_id()
+    storage.save_oco_order(
+        order_id=oco_id,
+        chat_id=1,
+        symbol="ADAUSDT",
+        side="buy",
+        legs=[{"leg_index": 1, "ordertype": "limit", "price": 0.4, "qty": 100.0, "side": "buy"}],
+        hook_symbol=None,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        btc_alert_liquidate=True,
+        status="active",
+    )
+
+    active = storage.load_active_orders()
+    assert active["simple"][0]["btc_alert_liquidate"] == 1
+    assert active["function"][0]["btc_alert_liquidate"] == 1
+    assert active["trailing"][0]["btc_alert_liquidate"] == 1
+    assert active["oco"][0]["btc_alert_liquidate"] == 1
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    for oid in (simple_id, function_id, trailing_id, oco_id):
+        cur.execute("SELECT btc_alert_liquidate FROM orders WHERE order_id = ?", (oid,))
+        row = cur.fetchone()
+        assert row is not None and int(row[0]) == 1
+    conn.close()
+    storage.close()

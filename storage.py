@@ -47,6 +47,7 @@ class SQLiteStorage:
                 chat_id INTEGER NOT NULL,
                 kind TEXT NOT NULL,
                 status TEXT NOT NULL,
+                btc_alert_liquidate INTEGER NOT NULL DEFAULT 0,
                 tf_minutes INTEGER NOT NULL DEFAULT 15,
                 next_eval_at INTEGER,
                 last_eval_at INTEGER,
@@ -148,6 +149,8 @@ class SQLiteStorage:
             conn.execute("ALTER TABLE orders ADD COLUMN next_eval_at INTEGER")
         if "last_eval_at" not in cols:
             conn.execute("ALTER TABLE orders ADD COLUMN last_eval_at INTEGER")
+        if "btc_alert_liquidate" not in cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN btc_alert_liquidate INTEGER NOT NULL DEFAULT 0")
 
         simple_cols = {row[1] for row in conn.execute("PRAGMA table_info(order_simple)").fetchall()}
         if "post_fill_action" not in simple_cols:
@@ -236,13 +239,14 @@ class SQLiteStorage:
         last_eval_at: Optional[int],
         post_fill_action: Optional[Dict[str, Any]] = None,
         acquistopulito: bool = False,
+        btc_alert_liquidate: bool = False,
         status: str = "active",
     ):
         now = self._now_iso()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO orders(order_id, chat_id, kind, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
-                (order_id, chat_id, "simple", status, now, now),
+                "INSERT INTO orders(order_id, chat_id, kind, status, btc_alert_liquidate, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (order_id, chat_id, "simple", status, int(btc_alert_liquidate), now, now),
             )
             self._conn.execute(
                 "UPDATE orders SET tf_minutes = ?, next_eval_at = ?, last_eval_at = ? WHERE order_id = ?",
@@ -285,13 +289,14 @@ class SQLiteStorage:
         last_eval_at: Optional[int],
         post_fill_action: Optional[Dict[str, Any]] = None,
         acquistopulito: bool = False,
+        btc_alert_liquidate: bool = False,
         status: str = "active",
     ):
         now = self._now_iso()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO orders(order_id, chat_id, kind, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
-                (order_id, chat_id, "function", status, now, now),
+                "INSERT INTO orders(order_id, chat_id, kind, status, btc_alert_liquidate, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (order_id, chat_id, "function", status, int(btc_alert_liquidate), now, now),
             )
             self._conn.execute(
                 "UPDATE orders SET tf_minutes = ?, next_eval_at = ?, last_eval_at = ? WHERE order_id = ?",
@@ -337,6 +342,7 @@ class SQLiteStorage:
         last_eval_at: Optional[int],
         post_fill_action: Optional[Dict[str, Any]] = None,
         acquistopulito: bool = False,
+        btc_alert_liquidate: bool = False,
         oco_parent_order_id: Optional[int] = None,
         oco_leg_index: Optional[int] = None,
         status: str = "active",
@@ -344,8 +350,8 @@ class SQLiteStorage:
         now = self._now_iso()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO orders(order_id, chat_id, kind, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
-                (order_id, chat_id, "trailing", status, now, now),
+                "INSERT INTO orders(order_id, chat_id, kind, status, btc_alert_liquidate, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (order_id, chat_id, "trailing", status, int(btc_alert_liquidate), now, now),
             )
             self._conn.execute(
                 "UPDATE orders SET tf_minutes = ?, next_eval_at = ?, last_eval_at = ? WHERE order_id = ?",
@@ -389,6 +395,7 @@ class SQLiteStorage:
         last_eval_at: Optional[int],
         parent_order_id: Optional[int] = None,
         acquistopulito: bool = False,
+        btc_alert_liquidate: bool = False,
         status: str = "active",
     ):
         """Persist an OCO order with its legs.
@@ -398,8 +405,8 @@ class SQLiteStorage:
         now = self._now_iso()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO orders(order_id, chat_id, kind, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
-                (order_id, chat_id, "oco", status, now, now),
+                "INSERT INTO orders(order_id, chat_id, kind, status, btc_alert_liquidate, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (order_id, chat_id, "oco", status, int(btc_alert_liquidate), now, now),
             )
             self._conn.execute(
                 "UPDATE orders SET tf_minutes = ?, next_eval_at = ?, last_eval_at = ? WHERE order_id = ?",
@@ -508,6 +515,7 @@ class SQLiteStorage:
                 """
                 SELECT o.order_id, o.chat_id, o.status, s.side, s.symbol, s.op, s.trigger_value, s.qty, s.hook_symbol, s.core_order_id
                      , s.post_fill_action, s.acquistopulito
+                     , o.btc_alert_liquidate
                      , o.tf_minutes, o.next_eval_at, o.last_eval_at
                 FROM orders o
                 JOIN order_simple s ON s.order_id = o.order_id
@@ -520,6 +528,7 @@ class SQLiteStorage:
                 """
                 SELECT o.order_id, o.chat_id, o.status, f.symbol, f.op, f.trigger_value, f.qty, f.percent, f.hook_symbol, f.bought, f.prev_price
                      , f.post_fill_action, f.acquistopulito
+                     , o.btc_alert_liquidate
                      , o.tf_minutes, o.next_eval_at, o.last_eval_at
                 FROM orders o
                 JOIN order_function f ON f.order_id = o.order_id
@@ -532,6 +541,7 @@ class SQLiteStorage:
                 """
                 SELECT o.order_id, o.chat_id, o.status, t.side, t.symbol, t.qty, t.percent, t.limit_price, t.hook_symbol, t.armed, t.max_price, t.min_price, t.arm_op
                      , t.post_fill_action, t.acquistopulito, t.oco_parent_order_id, t.oco_leg_index
+                     , o.btc_alert_liquidate
                      , o.tf_minutes, o.next_eval_at, o.last_eval_at
                 FROM orders o
                 JOIN order_trailing t ON t.order_id = o.order_id
@@ -544,6 +554,7 @@ class SQLiteStorage:
             oco_parents = self._conn.execute(
                 """
                  SELECT o.order_id, o.chat_id, o.status, oc.symbol, oc.side, oc.parent_order_id, oc.acquistopulito
+                     , o.btc_alert_liquidate
                      , o.tf_minutes, o.next_eval_at, o.last_eval_at
                 FROM orders o
                 JOIN order_oco oc ON oc.order_id = o.order_id
@@ -580,7 +591,8 @@ class SQLiteStorage:
             simple = self._conn.execute(
                 """
                 SELECT o.order_id, o.chat_id, o.status, o.kind, o.tf_minutes, o.next_eval_at, o.last_eval_at, o.created_at, o.updated_at,
-                       s.side, s.symbol, s.op, s.trigger_value, s.qty, s.hook_symbol, s.core_order_id, s.post_fill_action, s.acquistopulito
+                      s.side, s.symbol, s.op, s.trigger_value, s.qty, s.hook_symbol, s.core_order_id, s.post_fill_action, s.acquistopulito,
+                      o.btc_alert_liquidate
                 FROM orders o
                 JOIN order_simple s ON s.order_id = o.order_id
                 WHERE o.status != 'active' AND o.updated_at >= ?
@@ -592,7 +604,8 @@ class SQLiteStorage:
             function = self._conn.execute(
                 """
                 SELECT o.order_id, o.chat_id, o.status, o.kind, o.tf_minutes, o.next_eval_at, o.last_eval_at, o.created_at, o.updated_at,
-                       f.symbol, f.op, f.trigger_value, f.qty, f.percent, f.hook_symbol, f.bought, f.prev_price, f.post_fill_action, f.acquistopulito
+                      f.symbol, f.op, f.trigger_value, f.qty, f.percent, f.hook_symbol, f.bought, f.prev_price, f.post_fill_action, f.acquistopulito,
+                      o.btc_alert_liquidate
                 FROM orders o
                 JOIN order_function f ON f.order_id = o.order_id
                 WHERE o.status != 'active' AND o.updated_at >= ?
@@ -605,7 +618,8 @@ class SQLiteStorage:
                 """
                 SELECT o.order_id, o.chat_id, o.status, o.kind, o.tf_minutes, o.next_eval_at, o.last_eval_at, o.created_at, o.updated_at,
                        t.side, t.symbol, t.qty, t.percent, t.limit_price, t.hook_symbol, t.armed, t.max_price, t.min_price, t.arm_op,
-                       t.post_fill_action, t.acquistopulito, t.oco_parent_order_id, t.oco_leg_index
+                      t.post_fill_action, t.acquistopulito, t.oco_parent_order_id, t.oco_leg_index,
+                      o.btc_alert_liquidate
                 FROM orders o
                 JOIN order_trailing t ON t.order_id = o.order_id
                 WHERE o.status != 'active' AND o.updated_at >= ?
@@ -617,7 +631,7 @@ class SQLiteStorage:
             oco_parents = self._conn.execute(
                 """
                 SELECT o.order_id, o.chat_id, o.status, o.kind, o.tf_minutes, o.next_eval_at, o.last_eval_at, o.created_at, o.updated_at,
-                       oc.symbol, oc.side, oc.parent_order_id, oc.acquistopulito
+                      oc.symbol, oc.side, oc.parent_order_id, oc.acquistopulito, o.btc_alert_liquidate
                 FROM orders o
                 JOIN order_oco oc ON oc.order_id = o.order_id
                 WHERE o.status != 'active' AND o.updated_at >= ?
@@ -667,6 +681,7 @@ class SQLiteStorage:
                 archive_conn.row_factory = sqlite3.Row
                 archive_conn.execute("PRAGMA foreign_keys = ON")
                 self._init_schema(archive_conn)
+                self._migrate_schema(archive_conn)
 
                 order_rows = self._conn.execute(
                     "SELECT * FROM orders WHERE status != 'active' AND substr(updated_at, 1, 7) = ?",
@@ -678,14 +693,15 @@ class SQLiteStorage:
                     archive_conn.execute(
                         """
                         INSERT OR IGNORE INTO orders(
-                            order_id, chat_id, kind, status, tf_minutes, next_eval_at, last_eval_at, created_at, updated_at
-                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            order_id, chat_id, kind, status, btc_alert_liquidate, tf_minutes, next_eval_at, last_eval_at, created_at, updated_at
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             row["order_id"],
                             row["chat_id"],
                             row["kind"],
                             row["status"],
+                            row["btc_alert_liquidate"],
                             row["tf_minutes"],
                             row["next_eval_at"],
                             row["last_eval_at"],

@@ -24,3 +24,18 @@ Modalita supportate:
 Routine mensile sposta ordini chiusi in `data/archive`.
 
 Fonti: `ARCHITECTURE.md`, `progettoOCO.md`, `docs/HANDOFF.md`
+
+## Aggiornamento 2026-04-12 - BTC Drop Protection
+
+### Nuovo campo comune ordini
+- Aggiunta colonna `orders.btc_alert_liquidate` (migrazione additiva).
+- Campo propagato su salvataggio/caricamento ordini attivi e storico.
+- Inclusa compatibilita' archivio mensile con nuovo attributo.
+
+### Semantica side-aware
+- Ordini SELL con `btc_alert_liquidate=true`: liquidazione market su drop BTC oltre soglia.
+- Ordini BUY con `btc_alert_liquidate=true`: cancellazione preventiva su drop BTC oltre soglia.
+
+### Config globale soglia
+- Setting persistito: `btc_liquidation_drop_percent`.
+- Gestito via comando runtime `/ad PERCENT` (`/ad 0` disabilita).

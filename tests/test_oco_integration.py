@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 import time
@@ -13,6 +14,29 @@ class FakeExchangeClient:
             "status": "FILLED",
             "executedQty": str(kwargs.get("quantity")),
         }
+
+
+class CountingExchangeClient:
+    def __init__(self):
+        self.calls = []
+
+    def create_order(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {
+            "orderId": 900000 + len(self.calls),
+            "status": "FILLED",
+            "executedQty": str(kwargs.get("quantity")),
+        }
+
+
+class _DummyChat:
+    def __init__(self, chat_id=1):
+        self.id = chat_id
+
+
+class _DummyUpdate:
+    def __init__(self, chat_id=1):
+        self.effective_chat = _DummyChat(chat_id)
 
 
 def test_oco_end_to_end(tmp_path):
@@ -339,4 +363,182 @@ def test_trailing_buy_auto_oco_post_fill_creates_sell_oco(tmp_path):
     cur.execute("SELECT status FROM orders WHERE order_id = ?", (oco.order_id,))
     assert cur.fetchone() == ("active",)
     conn.close()
+    bot._storage.close()
+
+
+def test_cmd_ad_sets_threshold_and_reference(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    async def _noop_send(update, text, reply_markup=None):
+        return None
+
+    bot._send = _noop_send
+
+    asyncio.run(bot._cmd_ad(_DummyUpdate(), ["/ad", "1.25"]))
+
+    assert bot._btc_alert_liquidation_percent == 1.25
+    assert bot._btc_alert_liquidation_reference_price == 100.0
+    assert bot._storage.get_setting("btc_liquidation_drop_percent") == "1.25"
+
+    asyncio.run(bot._cmd_ad(_DummyUpdate(), ["/ad", "0"]))
+    assert bot._btc_alert_liquidation_percent == 0.0
+    assert bot._btc_alert_liquidation_reference_price is None
+
+    bot._storage.close()
+
+
+def test_btc_drop_liquidates_sell_and_cancels_buy(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    exchange = CountingExchangeClient()
+    bot._exchange_client = exchange
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    sell_spec = SimpleOrderSpec(
+        order_id=1001,
+        side="sell",
+        symbol="ETHUSDT",
+        op=">",
+        trigger=3000.0,
+        qty=0.25,
+        chat_id=999,
+        tf_minutes=1,
+        btc_alert_liquidate=True,
+    )
+    bot._attach_simple_to_engine(sell_spec)
+    bot._sell_orders.append(sell_spec)
+    bot._storage.save_simple_order(
+        order_id=sell_spec.order_id,
+        chat_id=sell_spec.chat_id,
+        side=sell_spec.side,
+        symbol=sell_spec.symbol,
+        op=sell_spec.op,
+        trigger_value=sell_spec.trigger,
+        qty=sell_spec.qty,
+        hook_symbol=sell_spec.hook_symbol,
+        core_order_id=sell_spec.core_order_id,
+        tf_minutes=sell_spec.tf_minutes,
+        next_eval_at=sell_spec.next_eval_at,
+        last_eval_at=sell_spec.last_eval_at,
+        btc_alert_liquidate=sell_spec.btc_alert_liquidate,
+        status=sell_spec.status,
+    )
+
+    buy_spec = SimpleOrderSpec(
+        order_id=1002,
+        side="buy",
+        symbol="BTCUSDT",
+        op="<",
+        trigger=95000.0,
+        qty=0.01,
+        chat_id=999,
+        tf_minutes=1,
+        btc_alert_liquidate=True,
+    )
+    bot._attach_simple_to_engine(buy_spec)
+    bot._buy_orders.append(buy_spec)
+    bot._storage.save_simple_order(
+        order_id=buy_spec.order_id,
+        chat_id=buy_spec.chat_id,
+        side=buy_spec.side,
+        symbol=buy_spec.symbol,
+        op=buy_spec.op,
+        trigger_value=buy_spec.trigger,
+        qty=buy_spec.qty,
+        hook_symbol=buy_spec.hook_symbol,
+        core_order_id=buy_spec.core_order_id,
+        tf_minutes=buy_spec.tf_minutes,
+        next_eval_at=buy_spec.next_eval_at,
+        last_eval_at=buy_spec.last_eval_at,
+        btc_alert_liquidate=buy_spec.btc_alert_liquidate,
+        status=buy_spec.status,
+    )
+
+    bot._btc_alert_liquidation_percent = 1.0
+    bot._btc_alert_liquidation_reference_price = 100.0
+    bot._last_btc_liquidation_tick = 0.0
+
+    mock_feed.set_price(98.5)
+    bot._eval_btc_liquidation(None, time.time())
+
+    assert sell_spec.status == "filled"
+    assert buy_spec.status == "cancelled"
+    assert len(exchange.calls) == 1
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM orders WHERE order_id = ?", (sell_spec.order_id,))
+    assert cur.fetchone() == ("filled",)
+    cur.execute("SELECT status FROM orders WHERE order_id = ?", (buy_spec.order_id,))
+    assert cur.fetchone() == ("cancelled",)
+    conn.close()
+    bot._storage.close()
+
+
+def test_btc_drop_ignores_upward_move(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    exchange = CountingExchangeClient()
+    bot._exchange_client = exchange
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    sell_spec = SimpleOrderSpec(
+        order_id=2001,
+        side="sell",
+        symbol="ETHUSDT",
+        op=">",
+        trigger=3000.0,
+        qty=0.25,
+        chat_id=999,
+        tf_minutes=1,
+        btc_alert_liquidate=True,
+    )
+    bot._attach_simple_to_engine(sell_spec)
+    bot._sell_orders.append(sell_spec)
+    bot._storage.save_simple_order(
+        order_id=sell_spec.order_id,
+        chat_id=sell_spec.chat_id,
+        side=sell_spec.side,
+        symbol=sell_spec.symbol,
+        op=sell_spec.op,
+        trigger_value=sell_spec.trigger,
+        qty=sell_spec.qty,
+        hook_symbol=sell_spec.hook_symbol,
+        core_order_id=sell_spec.core_order_id,
+        tf_minutes=sell_spec.tf_minutes,
+        next_eval_at=sell_spec.next_eval_at,
+        last_eval_at=sell_spec.last_eval_at,
+        btc_alert_liquidate=sell_spec.btc_alert_liquidate,
+        status=sell_spec.status,
+    )
+
+    bot._btc_alert_liquidation_percent = 1.0
+    bot._btc_alert_liquidation_reference_price = 100.0
+    bot._last_btc_liquidation_tick = 0.0
+
+    mock_feed.set_price(101.5)
+    bot._eval_btc_liquidation(None, time.time())
+
+    assert sell_spec.status == "active"
+    assert len(exchange.calls) == 0
     bot._storage.close()

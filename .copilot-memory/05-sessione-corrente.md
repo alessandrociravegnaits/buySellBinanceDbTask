@@ -128,4 +128,35 @@
 - Eseguire test completi (`python -m pytest -q`).
 - Commit delle modifiche con identita git corretta (`user.email`).
 - Aggiornare questo file a fine prossime sessioni.
+
+## Sessione Corrente - 2026-04-12
+
+### Obiettivo sessione
+- Verifica presenza logica storica su branch `featuresV1.0.0`.
+- Porting sicuro su branch attuale con estensione BUY-side.
+- Aggiornamento completo documentazione handoff.
+
+### Implementazione completata
+- BTC Drop Protection side-aware su runtime:
+	- SELL flagged => liquidazione market.
+	- BUY flagged => cancellazione preventiva.
+- Comando `/ad PERCENT` con persistenza setting.
+- Parser/wizard aggiornati per flag `btc_alert_liquidate`.
+- Storage aggiornato con colonna `orders.btc_alert_liquidate` + migrazione.
+
+### Test eseguiti
+- Targeted test e full suite.
+- Validazione finale: `PYTHONPATH=. pytest -q` => `54 passed, 4 warnings`.
+
+### Checkpoint git
+- Branch: `featureFinale00`
+- HEAD: `a0e26e0`
+
+### Documentazione aggiornata
+- `README.md`
+- `ARCHITECTURE.md`
+- `docs/HANDOFF.md`
+- `docs/ai/AI_HANDOFF_CURRENT.md`
+- `docs/ai/AI_DECISIONS_LOG.md`
+- `docs/ai/AI_PASS1_LAST_RUN.md`
  

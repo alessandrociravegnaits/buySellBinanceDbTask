@@ -319,3 +319,51 @@ Se vuoi che prepari un file `docs/HANDOFF.md` contenente checklist esatta, coman
 
 Dimmi quali passi vuoi che esegua adesso: procedo ad applicare modifiche al codice e creare i file necessari (DB schema, .gitignore, requirements aggiornato) oppure preferisci prima che generi test/unit?
 
+## Aggiornamento: BTC Drop Protection side-aware (2026-04-12)
+
+### Obiettivo
+Protezione runtime durante discesa repentina BTC:
+- uscita forzata per esposizioni SELL gia aperte/attive;
+- prevenzione ingressi BUY durante fase di drop.
+
+### Semantica finale
+- Trigger: solo ribasso, condizione `variation <= -threshold`.
+- Cadenza valutazione: 60 secondi.
+- Config soglia: `/ad PERCENT` con persistenza in `bot_settings` (`btc_liquidation_drop_percent`).
+- Disabilitazione rapida: `/ad 0`.
+
+### Comportamento side-aware
+- SELL attivi + flag `btc_alert_liquidate=true`:
+  - simple sell: liquidazione market;
+  - trailing sell: liquidazione market;
+  - OCO sell: cancel sibling/core leg pending, poi market sell finale.
+- BUY attivi + flag `btc_alert_liquidate=true`:
+  - simple buy, function buy, trailing buy, OCO buy: cancellazione preventiva ordine pendente.
+
+### Persistenza e schema
+- Tabella `orders`: nuovo campo `btc_alert_liquidate INTEGER NOT NULL DEFAULT 0`.
+- Migrazione additive idempotente in `storage.py` (`_migrate_schema`).
+- Save/load/historical aggiornati per propagare il campo a runtime/UI.
+- Archiviazione mensile: compatibile (copy colonne dinamico + migrazione schema archive DB).
+
+### Input surface
+- Parser token ordine: `btc_alert`, `btc_liquidate`, `btc_alert=...`, `btc_liquidate=...`.
+- Wizard guidato aggiornato su:
+  - simple buy/sell,
+  - function buy,
+  - trailing buy/sell,
+  - OCO buy/sell.
+
+### Osservabilita
+- `/info` mostra soglia e reference price di BTC drop protection.
+- `/o` e storico mostrano `btc_alert` per audit rapido.
+- Eventi principali:
+  - `btc_alert_liquidated` (SELL),
+  - `btc_alert_buy_cancelled` (BUY),
+  - `btc_alert_liquidation_failed`,
+  - `btc_alert_buy_cancel_failed`.
+
+### Stato validazione
+- Test suite completa al checkpoint: `54 passed, 4 warnings`.
+- Checkpoint git: branch `featureFinale00`, HEAD `a0e26e0`.
+

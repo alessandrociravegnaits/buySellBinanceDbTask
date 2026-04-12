@@ -36,3 +36,19 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 - WSL Bash: `wsl -e bash`
 
 Fonti: `README.md`, `docs/HANDOFF.md`
+
+## Aggiornamento 2026-04-12
+
+### Comando validazione usato nel checkpoint
+```powershell
+PYTHONPATH=. pytest -q
+```
+
+### Esito checkpoint
+- `54 passed, 4 warnings`
+- Branch: `featureFinale00`
+- HEAD: `a0e26e0`
+
+### Note operative
+- Nuovo comando runtime: `/ad PERCENT` per soglia BTC drop.
+- `PERCENT=0` disabilita la protezione.

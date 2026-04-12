@@ -68,6 +68,7 @@ class SimpleOrderSpec:
     last_eval_at: Optional[int] = None
     post_fill_action: Optional[Dict[str, Any]] = None
     acquistopulito: bool = False
+    btc_alert_liquidate: bool = False
     status: str = "active"
 
 
@@ -87,6 +88,7 @@ class TrailingSellSpec:
     next_eval_at: Optional[int] = None
     last_eval_at: Optional[int] = None
     post_fill_action: Optional[Dict[str, Any]] = None
+    btc_alert_liquidate: bool = False
     oco_parent_order_id: Optional[int] = None
     oco_leg_index: Optional[int] = None
     status: str = "active"
@@ -108,6 +110,7 @@ class TrailingBuySpec:
     last_eval_at: Optional[int] = None
     post_fill_action: Optional[Dict[str, Any]] = None
     acquistopulito: bool = False
+    btc_alert_liquidate: bool = False
     status: str = "active"
 
 
@@ -128,6 +131,7 @@ class FunctionSpec:
     last_eval_at: Optional[int] = None
     post_fill_action: Optional[Dict[str, Any]] = None
     acquistopulito: bool = False
+    btc_alert_liquidate: bool = False
     status: str = "active"
 
 
@@ -143,6 +147,7 @@ class OcoSpec:
     next_eval_at: Optional[int] = None
     last_eval_at: Optional[int] = None
     acquistopulito: bool = False
+    btc_alert_liquidate: bool = False
     status: str = "active"
 
 
@@ -169,11 +174,14 @@ class TelegramTradingBot:
         self._alert_enabled = False
         self._alert_percent = 0.0
         self._alert_reference_price: Optional[float] = None
+        self._btc_alert_liquidation_percent = abs(float(os.getenv("BTC_LIQUIDATION_DROP_PERCENT", "0.5")))
+        self._btc_alert_liquidation_reference_price: Optional[float] = None
         self._clean_entry_preset = "bilanciato"
         self._clean_entry_config = self._default_clean_entry_config()
 
         self._last_timeframe_tick = 0.0
         self._last_alert_tick = 0.0
+        self._last_btc_liquidation_tick = 0.0
         self._last_archive_check = 0.0
 
         self._notifications: "queue.Queue[Tuple[int, str]]" = queue.Queue()
@@ -346,6 +354,7 @@ class TelegramTradingBot:
         echo = self._storage.get_setting("echo_enabled")
         alert_enabled = self._storage.get_setting("alert_enabled")
         alert_percent = self._storage.get_setting("alert_percent")
+        btc_drop_percent = self._storage.get_setting("btc_liquidation_drop_percent")
 
         if tf:
             self._default_tf_minutes = int(tf)
@@ -359,6 +368,13 @@ class TelegramTradingBot:
             self._alert_enabled = alert_enabled == "1"
         if alert_percent:
             self._alert_percent = float(alert_percent)
+        if btc_drop_percent is not None:
+            try:
+                self._btc_alert_liquidation_percent = abs(float(btc_drop_percent))
+            except ValueError:
+                log.warning("Valore non valido per btc_liquidation_drop_percent: %s", btc_drop_percent)
+        if self._btc_alert_liquidation_percent > 0:
+            self._poller.add_symbol("BTCUSDT")
 
         preset = (self._storage.get_setting("clean_entry_preset") or "").strip().lower()
         if preset in CLEAN_ENTRY_PRESETS:
@@ -473,6 +489,7 @@ class TelegramTradingBot:
                 last_eval_at=row.get("last_eval_at"),
                 post_fill_action=self._decode_post_fill_action(row.get("post_fill_action")),
                 acquistopulito=bool(row.get("acquistopulito", 0)),
+                btc_alert_liquidate=bool(row.get("btc_alert_liquidate", 0)),
                 status=row["status"],
             )
             spec.next_eval_at = self._next_boundary_epoch(spec.tf_minutes)
@@ -500,6 +517,7 @@ class TelegramTradingBot:
                     last_eval_at=None,
                     post_fill_action=self._decode_post_fill_action(row.get("post_fill_action")),
                     acquistopulito=bool(row.get("acquistopulito", 0)),
+                    btc_alert_liquidate=bool(row.get("btc_alert_liquidate", 0)),
                     status=row["status"],
                 )
             self._function_orders.append(spec)
@@ -522,6 +540,7 @@ class TelegramTradingBot:
                         next_eval_at=self._next_boundary_epoch(row.get("tf_minutes", 15)),
                         last_eval_at=None,
                         post_fill_action=self._decode_post_fill_action(row.get("post_fill_action")),
+                        btc_alert_liquidate=bool(row.get("btc_alert_liquidate", 0)),
                         oco_parent_order_id=row.get("oco_parent_order_id"),
                         oco_leg_index=row.get("oco_leg_index"),
                         status=row["status"],
@@ -544,6 +563,7 @@ class TelegramTradingBot:
                         last_eval_at=None,
                         post_fill_action=self._decode_post_fill_action(row.get("post_fill_action")),
                         acquistopulito=bool(row.get("acquistopulito", 0)),
+                        btc_alert_liquidate=bool(row.get("btc_alert_liquidate", 0)),
                         status=row["status"],
                     )
                 self._trailing_buy_orders.append(spec)
@@ -563,6 +583,7 @@ class TelegramTradingBot:
                 next_eval_at=self._next_boundary_epoch(row.get("tf_minutes", 15)),
                 last_eval_at=None,
                 acquistopulito=bool(row.get("acquistopulito", 0)),
+                btc_alert_liquidate=bool(row.get("btc_alert_liquidate", 0)),
                 status=row["status"],
             )
             self._oco_orders.append(spec)
@@ -617,6 +638,39 @@ class TelegramTradingBot:
                     value = False
                 else:
                     raise ValueError("Valore acquistopulito non valido: usa true/false")
+                continue
+            filtered.append(token)
+        return filtered, bool(value)
+
+    @staticmethod
+    def _extract_btc_alert_liquidate(parts: List[str]) -> Tuple[List[str], bool]:
+        """Extract optional BTC drop protection flag from command tokens.
+
+        Supported tokens:
+        - btc_alert
+        - btc_liquidate
+        - btc_alert=true|false|1|0|si|no
+        - btc_liquidate=true|false|1|0|si|no
+        """
+        filtered: List[str] = []
+        value: Optional[bool] = None
+        for token in parts:
+            lower = token.lower()
+            if lower in {"btc_alert", "btc_liquidate"}:
+                if value is not None:
+                    raise ValueError("Flag btc_alert_liquidate duplicato")
+                value = True
+                continue
+            if lower.startswith("btc_alert=") or lower.startswith("btc_liquidate="):
+                if value is not None:
+                    raise ValueError("Flag btc_alert_liquidate duplicato")
+                raw = lower.split("=", 1)[1].strip()
+                if raw in {"1", "true", "si", "yes", "on"}:
+                    value = True
+                elif raw in {"0", "false", "no", "off"}:
+                    value = False
+                else:
+                    raise ValueError("Valore btc_alert_liquidate non valido: usa true/false")
                 continue
             filtered.append(token)
         return filtered, bool(value)
@@ -1727,6 +1781,7 @@ class TelegramTradingBot:
             "/B SYMBOL PERCENT QTY LIMIT [tf=MIN] - trailing buy\n"
             "/t MINUTI - default tf nuovi ordini (1,5,15,30,60,120,240,1440)\n"
             "/a 0|1 [PERCENT] - alert BTCUSDT\n"
+            "/ad PERCENT - soglia caduta BTC per protezione ordini flaggati\n"
             "/e 0|1 - echo prezzi\n"
             "/setpulito [preset|manuale|reset] - config globale clean-entry\n"
             "/o - lista ordini con order_id\n"
@@ -1747,6 +1802,8 @@ class TelegramTradingBot:
             f"- Alert abilitato: {self._alert_enabled}",
             f"- Alert percent: {self._alert_percent}",
             f"- Alert reference price: {self._alert_reference_price}",
+            f"- BTC drop protection percent: {self._btc_alert_liquidation_percent}",
+            f"- BTC drop protection reference price: {self._btc_alert_liquidation_reference_price}",
             f"- {self._clean_entry_summary()}",
             f"- Ordini attivi: sell={len(self._sell_orders)} buy={len(self._buy_orders)} function={len(self._function_orders)} trailing_sell={len(self._trailing_sell_orders)} trailing_buy={len(self._trailing_buy_orders)} oco={oco_count}",
             f"- Trailing SELL linked a OCO attivi: {linked_trailing_count}",
@@ -1924,6 +1981,18 @@ class TelegramTradingBot:
             if state == "simple_tf":
                 tf = self._parse_tf_choice(text)
                 draft["tf"] = tf
+                self._set_ui_state(context, "simple_btc_liq_choice", draft)
+                await self._send(update, "Attivare protezione BTC drop per questo ordine?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "simple_btc_liq_choice":
+                if normalized == "si":
+                    draft["btc_alert_liquidate"] = True
+                elif normalized == "no":
+                    draft["btc_alert_liquidate"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
+
                 if draft.get("side") == "buy":
                     self._set_ui_state(context, "simple_clean_entry_choice", draft)
                     await self._send(update, "Attivare acquistopulito per questo BUY?", reply_markup=self._yes_no_keyboard())
@@ -2025,6 +2094,8 @@ class TelegramTradingBot:
                 parts.append(f"tf={draft['tf']}")
                 if draft.get("acquistopulito"):
                     parts.append("acquistopulito")
+                if draft.get("btc_alert_liquidate"):
+                    parts.append("btc_alert=1")
                 if draft.get("post_fill_action"):
                     parts.append(self._post_fill_action_to_token(draft["post_fill_action"]))
                 await self._cmd_simple(update, parts, side=draft["side"])
@@ -2124,6 +2195,17 @@ class TelegramTradingBot:
                 return True
             if state == "function_tf":
                 draft["tf"] = self._parse_tf_choice(text)
+                self._set_ui_state(context, "function_btc_liq_choice", draft)
+                await self._send(update, "Attivare protezione BTC drop per questo FUNCTION buy?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "function_btc_liq_choice":
+                if normalized == "si":
+                    draft["btc_alert_liquidate"] = True
+                elif normalized == "no":
+                    draft["btc_alert_liquidate"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
                 self._set_ui_state(context, "function_clean_entry_choice", draft)
                 await self._send(update, "Attivare acquistopulito per questo FUNCTION buy?", reply_markup=self._yes_no_keyboard())
                 return True
@@ -2216,6 +2298,8 @@ class TelegramTradingBot:
                 parts.append(f"tf={draft['tf']}")
                 if draft.get("acquistopulito"):
                     parts.append("acquistopulito")
+                if draft.get("btc_alert_liquidate"):
+                    parts.append("btc_alert=1")
                 if draft.get("post_fill_action"):
                     parts.append(self._post_fill_action_to_token(draft["post_fill_action"]))
                 await self._cmd_f(update, parts)
@@ -2284,6 +2368,17 @@ class TelegramTradingBot:
                 return True
             if state == "ts_tf":
                 draft["tf"] = self._parse_tf_choice(text)
+                self._set_ui_state(context, "ts_btc_liq_choice", draft)
+                await self._send(update, "Attivare protezione BTC drop per questo TRAILING SELL?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "ts_btc_liq_choice":
+                if normalized == "si":
+                    draft["btc_alert_liquidate"] = True
+                elif normalized == "no":
+                    draft["btc_alert_liquidate"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
                 self._set_ui_state(context, "ts_confirm", draft)
                 await self._send(update, f"Confermi TRAILING SELL su {draft['symbol']}?", reply_markup=self._confirm_keyboard())
                 return True
@@ -2297,6 +2392,8 @@ class TelegramTradingBot:
                 if draft.get("hook"):
                     parts.append(f"@{draft['hook']}")
                 parts.append(f"tf={draft['tf']}")
+                if draft.get("btc_alert_liquidate"):
+                    parts.append("btc_alert=1")
                 await self._cmd_S(update, parts)
                 self._clear_ui_state(context)
                 await self._show_orders_menu(update)
@@ -2341,6 +2438,17 @@ class TelegramTradingBot:
                 return True
             if state == "tb_tf":
                 draft["tf"] = self._parse_tf_choice(text)
+                self._set_ui_state(context, "tb_btc_liq_choice", draft)
+                await self._send(update, "Attivare protezione BTC drop per questo TRAILING BUY?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "tb_btc_liq_choice":
+                if normalized == "si":
+                    draft["btc_alert_liquidate"] = True
+                elif normalized == "no":
+                    draft["btc_alert_liquidate"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
                 self._set_ui_state(context, "tb_clean_entry_choice", draft)
                 await self._send(update, "Attivare acquistopulito per questo TRAILING BUY?", reply_markup=self._yes_no_keyboard())
                 return True
@@ -2426,6 +2534,8 @@ class TelegramTradingBot:
                 parts.append(f"tf={draft['tf']}")
                 if draft.get("acquistopulito"):
                     parts.append("acquistopulito")
+                if draft.get("btc_alert_liquidate"):
+                    parts.append("btc_alert=1")
                 if draft.get("post_fill_action"):
                     parts.append(self._post_fill_action_to_token(draft["post_fill_action"]))
                 await self._cmd_B(update, parts)
@@ -2451,10 +2561,25 @@ class TelegramTradingBot:
                 draft["side"] = normalized
                 draft["legs"] = []
                 if normalized == "buy":
+                    self._set_ui_state(context, "oco_btc_liq_choice", draft)
+                    await self._send(update, "Attivare protezione BTC drop per questo OCO buy?", reply_markup=self._yes_no_keyboard())
+                    return True
+                draft["acquistopulito"] = False
+                self._set_ui_state(context, "oco_btc_liq_choice", draft)
+                await self._send(update, "Attivare protezione BTC drop per questo OCO sell?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "oco_btc_liq_choice":
+                if normalized == "si":
+                    draft["btc_alert_liquidate"] = True
+                elif normalized == "no":
+                    draft["btc_alert_liquidate"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
+                if draft.get("side") == "buy":
                     self._set_ui_state(context, "oco_clean_entry_choice", draft)
                     await self._send(update, "Attivare acquistopulito per questo OCO buy?", reply_markup=self._yes_no_keyboard())
                     return True
-                draft["acquistopulito"] = False
                 self._set_ui_state(context, "oco_leg1_type", draft)
                 await self._send(update, "Leg 1: scegli tipo (limit/stop_limit/market)", reply_markup=self._oco_type_keyboard())
                 return True
@@ -2583,6 +2708,7 @@ class TelegramTradingBot:
                     next_eval_at=self._next_boundary_epoch(tf),
                     last_eval_at=None,
                     acquistopulito=bool(draft.get("acquistopulito", False)),
+                    btc_alert_liquidate=bool(draft.get("btc_alert_liquidate", False)),
                     status="active",
                 )
                 oco_spec = OcoSpec(
@@ -2594,6 +2720,7 @@ class TelegramTradingBot:
                     parent_order_id=None,
                     tf_minutes=tf,
                     acquistopulito=bool(draft.get("acquistopulito", False)),
+                    btc_alert_liquidate=bool(draft.get("btc_alert_liquidate", False)),
                 )
                 # keep in-memory record for UI and lifecycle operations
                 if not hasattr(self, "_oco_orders"):
@@ -2821,6 +2948,8 @@ class TelegramTradingBot:
                 await self._cmd_t(update, parts)
             elif cmd == "/a":
                 await self._cmd_a(update, parts)
+            elif cmd == "/ad":
+                await self._cmd_ad(update, parts)
             elif cmd == "/e":
                 await self._cmd_e(update, parts)
             elif cmd == "/setpulito":
@@ -2952,6 +3081,7 @@ class TelegramTradingBot:
         parts, tf_minutes = self._extract_tf(parts)
         parts, post_fill_action = self._extract_post_fill_action(parts)
         parts, acquistopulito = self._extract_acquistopulito(parts)
+        parts, btc_alert_liquidate = self._extract_btc_alert_liquidate(parts)
         symbol, op, trigger_val, qty, hook = self._parse_simple_order(parts)
         ok, message = self._validate_spot_symbol(symbol)
         if not ok:
@@ -2981,6 +3111,7 @@ class TelegramTradingBot:
             next_eval_at=next_eval_at,
             post_fill_action=post_fill_action,
             acquistopulito=acquistopulito,
+            btc_alert_liquidate=btc_alert_liquidate,
         )
         self._attach_simple_to_engine(spec)
 
@@ -2999,12 +3130,19 @@ class TelegramTradingBot:
             last_eval_at=spec.last_eval_at,
             post_fill_action=spec.post_fill_action,
             acquistopulito=spec.acquistopulito,
+            btc_alert_liquidate=spec.btc_alert_liquidate,
             status=spec.status,
         )
         self._storage.append_event(
             "simple_created",
             spec.order_id,
-            {"side": side, "symbol": symbol, "tf": tf_minutes, "acquistopulito": spec.acquistopulito},
+            {
+                "side": side,
+                "symbol": symbol,
+                "tf": tf_minutes,
+                "acquistopulito": spec.acquistopulito,
+                "btc_alert_liquidate": spec.btc_alert_liquidate,
+            },
         )
 
         if side == "sell":
@@ -3018,6 +3156,7 @@ class TelegramTradingBot:
         parts, tf_minutes = self._extract_tf(parts)
         parts, post_fill_action = self._extract_post_fill_action(parts)
         parts, acquistopulito = self._extract_acquistopulito(parts)
+        parts, btc_alert_liquidate = self._extract_btc_alert_liquidate(parts)
         if len(parts) < 6:
             raise ValueError("Formato: /f SYMBOL <|> TRIGGER QTY PERCENT [@PAIRHOOK]")
 
@@ -3055,6 +3194,7 @@ class TelegramTradingBot:
             None,
             post_fill_action,
             acquistopulito,
+            btc_alert_liquidate,
         )
         self._function_orders.append(spec)
         self._poller.add_symbol(symbol)
@@ -3077,18 +3217,25 @@ class TelegramTradingBot:
             last_eval_at=spec.last_eval_at,
             post_fill_action=spec.post_fill_action,
             acquistopulito=spec.acquistopulito,
+            btc_alert_liquidate=spec.btc_alert_liquidate,
             status="active",
         )
         self._storage.append_event(
             "function_created",
             order_id,
-            {"symbol": symbol, "tf": tf_minutes, "acquistopulito": spec.acquistopulito},
+            {
+                "symbol": symbol,
+                "tf": tf_minutes,
+                "acquistopulito": spec.acquistopulito,
+                "btc_alert_liquidate": spec.btc_alert_liquidate,
+            },
         )
         exec_symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
         await self._send(update, f"Ordine function inserito: order_id={order_id} watch={spec.symbol} exec={exec_symbol}")
 
     async def _cmd_S(self, update: Update, parts: List[str]):
         parts, tf_minutes = self._extract_tf(parts)
+        parts, btc_alert_liquidate = self._extract_btc_alert_liquidate(parts)
         if len(parts) < 4:
             raise ValueError("Formato: /S SYMBOL PERCENT QTY [LIMIT] [@PAIRHOOK]")
 
@@ -3126,6 +3273,7 @@ class TelegramTradingBot:
             tf_minutes,
             self._next_boundary_epoch(tf_minutes),
             None,
+            btc_alert_liquidate=btc_alert_liquidate,
         )
         self._init_trailing_sell(spec)
         self._trailing_sell_orders.append(spec)
@@ -3149,9 +3297,14 @@ class TelegramTradingBot:
             tf_minutes=spec.tf_minutes,
             next_eval_at=spec.next_eval_at,
             last_eval_at=spec.last_eval_at,
+            btc_alert_liquidate=spec.btc_alert_liquidate,
             status=spec.status,
         )
-        self._storage.append_event("trailing_sell_created", order_id, {"symbol": symbol, "tf": tf_minutes})
+        self._storage.append_event(
+            "trailing_sell_created",
+            order_id,
+            {"symbol": symbol, "tf": tf_minutes, "btc_alert_liquidate": spec.btc_alert_liquidate},
+        )
         exec_symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
         await self._send(update, f"Trailing sell inserito: order_id={order_id} watch={spec.symbol} exec={exec_symbol}")
 
@@ -3159,6 +3312,7 @@ class TelegramTradingBot:
         parts, tf_minutes = self._extract_tf(parts)
         parts, post_fill_action = self._extract_post_fill_action(parts)
         parts, acquistopulito = self._extract_acquistopulito(parts)
+        parts, btc_alert_liquidate = self._extract_btc_alert_liquidate(parts)
         if len(parts) < 4:
             raise ValueError("Formato: /B SYMBOL PERCENT QTY [LIMIT] [@PAIRHOOK]")
 
@@ -3193,6 +3347,7 @@ class TelegramTradingBot:
             None,
             post_fill_action,
             acquistopulito,
+            btc_alert_liquidate,
         )
         self._init_trailing_buy(spec)
         self._trailing_buy_orders.append(spec)
@@ -3218,12 +3373,20 @@ class TelegramTradingBot:
             last_eval_at=spec.last_eval_at,
             post_fill_action=spec.post_fill_action,
             acquistopulito=spec.acquistopulito,
+            btc_alert_liquidate=spec.btc_alert_liquidate,
             status=spec.status,
         )
         self._storage.append_event(
             "trailing_buy_created",
             order_id,
-            {"symbol": symbol, "tf": tf_minutes, "limit": spec.limit, "hook_symbol": hook, "acquistopulito": spec.acquistopulito},
+            {
+                "symbol": symbol,
+                "tf": tf_minutes,
+                "limit": spec.limit,
+                "hook_symbol": hook,
+                "acquistopulito": spec.acquistopulito,
+                "btc_alert_liquidate": spec.btc_alert_liquidate,
+            },
         )
         await self._send(update, f"Trailing buy inserito: order_id={order_id}")
 
@@ -3264,6 +3427,28 @@ class TelegramTradingBot:
             payload={"alert_enabled": self._alert_enabled, "alert_percent": self._alert_percent},
         )
         await self._send(update, f"Alert impostato: enabled={self._alert_enabled}, percent={self._alert_percent}")
+
+    async def _cmd_ad(self, update: Update, parts: List[str]):
+        if len(parts) < 2:
+            raise ValueError("Formato: /ad PERCENT")
+        pct = abs(float(parts[1]))
+        self._btc_alert_liquidation_percent = pct
+        self._storage.set_setting("btc_liquidation_drop_percent", str(self._btc_alert_liquidation_percent))
+
+        if pct > 0:
+            self._poller.add_symbol("BTCUSDT")
+            self._btc_alert_liquidation_reference_price = self._feed.get_price("BTCUSDT", self._default_tf_minutes)
+        else:
+            self._btc_alert_liquidation_reference_price = None
+
+        self._storage.append_event(
+            "setting_updated",
+            payload={"btc_liquidation_drop_percent": self._btc_alert_liquidation_percent},
+        )
+        if pct <= 0:
+            await self._send(update, "BTC drop protection disattivata (soglia=0).")
+            return
+        await self._send(update, f"BTC drop protection impostata a {self._btc_alert_liquidation_percent}% (ordini flaggati).")
 
     async def _cmd_e(self, update: Update, parts: List[str]):
         if len(parts) < 2:
@@ -3374,17 +3559,17 @@ class TelegramTradingBot:
         for s in self._sell_orders:
             if s.status != "active":
                 continue
-            lines.append(f"{s.order_id} watch={s.symbol} exec={self._exec_symbol(s.symbol, s.hook_symbol)} {s.op} {s.trigger} qty={s.qty} tf={s.tf_minutes}m next={_human_time(s.next_eval_at)} post_fill={_post_fill_label(s.post_fill_action)} status={s.status}")
+            lines.append(f"{s.order_id} watch={s.symbol} exec={self._exec_symbol(s.symbol, s.hook_symbol)} {s.op} {s.trigger} qty={s.qty} tf={s.tf_minutes}m next={_human_time(s.next_eval_at)} post_fill={_post_fill_label(s.post_fill_action)} btc_alert={s.btc_alert_liquidate} status={s.status}")
         lines.append("BUY:")
         for b in self._buy_orders:
             if b.status != "active":
                 continue
-            lines.append(f"{b.order_id} watch={b.symbol} exec={self._exec_symbol(b.symbol, b.hook_symbol)} {b.op} {b.trigger} qty={b.qty} tf={b.tf_minutes}m next={_human_time(b.next_eval_at)} post_fill={_post_fill_label(b.post_fill_action)} clean={b.acquistopulito} status={b.status}")
+            lines.append(f"{b.order_id} watch={b.symbol} exec={self._exec_symbol(b.symbol, b.hook_symbol)} {b.op} {b.trigger} qty={b.qty} tf={b.tf_minutes}m next={_human_time(b.next_eval_at)} post_fill={_post_fill_label(b.post_fill_action)} clean={b.acquistopulito} btc_alert={b.btc_alert_liquidate} status={b.status}")
         lines.append("FUNCTION:")
         for f in self._function_orders:
             if f.status != "active":
                 continue
-            lines.append(f"{f.order_id} watch={f.symbol} exec={self._exec_symbol(f.symbol, f.hook_symbol)} {f.op} {f.trigger} qty={f.qty} pct={f.percent} tf={f.tf_minutes}m next={_human_time(f.next_eval_at)} post_fill={_post_fill_label(f.post_fill_action)} clean={f.acquistopulito} status={f.status}")
+            lines.append(f"{f.order_id} watch={f.symbol} exec={self._exec_symbol(f.symbol, f.hook_symbol)} {f.op} {f.trigger} qty={f.qty} pct={f.percent} tf={f.tf_minutes}m next={_human_time(f.next_eval_at)} post_fill={_post_fill_label(f.post_fill_action)} clean={f.acquistopulito} btc_alert={f.btc_alert_liquidate} status={f.status}")
         lines.append("TRAILING SELL:")
         for t in self._trailing_sell_orders:
             if t.status != "active":
@@ -3392,12 +3577,12 @@ class TelegramTradingBot:
             linked = ""
             if t.oco_parent_order_id is not None and t.oco_leg_index is not None:
                 linked = f" linked_oco={t.oco_parent_order_id}/leg{t.oco_leg_index}"
-            lines.append(f"{t.order_id} watch={t.symbol} exec={self._exec_symbol(t.symbol, t.hook_symbol)} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={_human_time(t.next_eval_at)} post_fill={_post_fill_label(t.post_fill_action)}{linked} status={t.status}")
+            lines.append(f"{t.order_id} watch={t.symbol} exec={self._exec_symbol(t.symbol, t.hook_symbol)} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={_human_time(t.next_eval_at)} post_fill={_post_fill_label(t.post_fill_action)} btc_alert={t.btc_alert_liquidate}{linked} status={t.status}")
         lines.append("TRAILING BUY:")
         for t in self._trailing_buy_orders:
             if t.status != "active":
                 continue
-            lines.append(f"{t.order_id} {t.symbol} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={_human_time(t.next_eval_at)} post_fill={_post_fill_label(t.post_fill_action)} clean={t.acquistopulito} status={t.status}")
+            lines.append(f"{t.order_id} {t.symbol} pct={t.percent} qty={t.qty} limit={t.limit} tf={t.tf_minutes}m next={_human_time(t.next_eval_at)} post_fill={_post_fill_label(t.post_fill_action)} clean={t.acquistopulito} btc_alert={t.btc_alert_liquidate} status={t.status}")
         # OCO orders
         lines.append("OCO:")
         for o in getattr(self, "_oco_orders", []):
@@ -3418,10 +3603,10 @@ class TelegramTradingBot:
                         parts.append(f"core={l.get('core_order_id')}")
                     legs_text.append("(" + ", ".join(parts) + ")")
                 legs_joined = " ".join(legs_text)
-                lines.append(f"{o.order_id} watch={o.symbol} side={o.side} parent={o.parent_order_id} legs={legs_joined} tf={o.tf_minutes}m next={_human_time(o.next_eval_at)} clean={o.acquistopulito} status={o.status}")
+                lines.append(f"{o.order_id} watch={o.symbol} side={o.side} parent={o.parent_order_id} legs={legs_joined} tf={o.tf_minutes}m next={_human_time(o.next_eval_at)} clean={o.acquistopulito} btc_alert={o.btc_alert_liquidate} status={o.status}")
             except Exception:
                 lines.append(str(o))
-        lines.append(f"Timeframe={self._timeframe_seconds}s echo={self._echo_enabled} alert={self._alert_enabled}")
+        lines.append(f"Timeframe={self._timeframe_seconds}s echo={self._echo_enabled} alert={self._alert_enabled} btc_drop={self._btc_alert_liquidation_percent}%")
         await self._send(update, "\n".join(lines))
 
     async def _cmd_history_orders(self, update: Update, days: int):
@@ -3467,15 +3652,15 @@ class TelegramTradingBot:
                 tf = row.get("tf_minutes")
                 if key == "simple":
                     lines.append(
-                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
+                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
                     )
                 elif key == "function":
                     lines.append(
-                        f"{oid} [{status}] {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} pct={row.get('percent')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
+                        f"{oid} [{status}] {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} pct={row.get('percent')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
                     )
                 elif key == "trailing":
                     lines.append(
-                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} pct={row.get('percent')} qty={row.get('qty')} limit={row.get('limit_price')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
+                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} pct={row.get('percent')} qty={row.get('qty')} limit={row.get('limit_price')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
                     )
                 else:
                     legs = row.get("legs") or []
@@ -3494,7 +3679,7 @@ class TelegramTradingBot:
                         leg_parts.append(f"status={leg.get('status')}")
                         legs_text.append("(" + ", ".join(leg_parts) + ")")
                     lines.append(
-                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} parent={row.get('parent_order_id')} legs={' '.join(legs_text)} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')}"
+                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} parent={row.get('parent_order_id')} legs={' '.join(legs_text)} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')}"
                     )
 
         if not found_any:
@@ -3888,6 +4073,287 @@ class TelegramTradingBot:
             self._queue_message(chat_id, f"ALERT BTCUSDT: variazione {variation:.4f}%")
         self._alert_reference_price = price
 
+    def _liquidate_simple_sell_order(self, spec: SimpleOrderSpec, btc_price: float, variation: float) -> bool:
+        symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
+        try:
+            if spec.core_order_id is not None:
+                self._manager.cancel_order(spec.core_order_id)
+        except Exception:
+            pass
+
+        try:
+            exchange_resp = self._execute_market_order_on_exchange("sell", symbol, spec.qty)
+            spec.status = "filled"
+            self._storage.update_order_status(spec.order_id, "filled")
+            self._storage.append_event(
+                "btc_alert_liquidated",
+                spec.order_id,
+                {
+                    "order_type": "simple",
+                    "symbol": symbol,
+                    "qty": spec.qty,
+                    "btc_price": btc_price,
+                    "variation": variation,
+                    **self._exchange_fields(exchange_resp),
+                },
+            )
+            self._queue_message(
+                spec.chat_id,
+                f"BTC DROP PROTECTION: liquidato SELL {spec.order_id} su {symbol} (caduta {variation:.4f}%)",
+            )
+            return True
+        except Exception as exc:
+            spec.status = "error"
+            self._handle_exchange_error(
+                order_id=spec.order_id,
+                chat_id=spec.chat_id,
+                event_type="btc_alert_liquidation_failed",
+                user_msg_prefix=f"liquidazione BTC simple {symbol}",
+                payload={
+                    "order_type": "simple",
+                    "symbol": symbol,
+                    "qty": spec.qty,
+                    "btc_price": btc_price,
+                    "variation": variation,
+                },
+                exc=exc,
+            )
+            return False
+
+    def _liquidate_trailing_sell_order(self, spec: TrailingSellSpec, btc_price: float, variation: float) -> bool:
+        symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
+        try:
+            exchange_resp = self._execute_market_order_on_exchange("sell", symbol, spec.qty)
+            spec.status = "filled"
+            self._storage.update_order_status(spec.order_id, "filled")
+            self._storage.append_event(
+                "btc_alert_liquidated",
+                spec.order_id,
+                {
+                    "order_type": "trailing_sell",
+                    "symbol": symbol,
+                    "qty": spec.qty,
+                    "btc_price": btc_price,
+                    "variation": variation,
+                    **self._exchange_fields(exchange_resp),
+                },
+            )
+            self._queue_message(
+                spec.chat_id,
+                f"BTC DROP PROTECTION: liquidato TRAILING SELL {spec.order_id} su {symbol} (caduta {variation:.4f}%)",
+            )
+            return True
+        except Exception as exc:
+            spec.status = "error"
+            self._handle_exchange_error(
+                order_id=spec.order_id,
+                chat_id=spec.chat_id,
+                event_type="btc_alert_liquidation_failed",
+                user_msg_prefix=f"liquidazione BTC trailing sell {symbol}",
+                payload={
+                    "order_type": "trailing_sell",
+                    "symbol": symbol,
+                    "qty": spec.qty,
+                    "btc_price": btc_price,
+                    "variation": variation,
+                },
+                exc=exc,
+            )
+            return False
+
+    def _liquidate_oco_sell_order(self, spec: OcoSpec, btc_price: float, variation: float) -> bool:
+        symbol = self._exec_symbol(spec.symbol, None)
+        qty_candidates: List[float] = []
+        for leg in spec.legs:
+            try:
+                leg_qty = float(leg.get("qty") or 0.0)
+            except Exception:
+                leg_qty = 0.0
+            if leg_qty > 0:
+                qty_candidates.append(leg_qty)
+        qty = qty_candidates[0] if qty_candidates else 0.0
+        if qty <= 0:
+            self._storage.append_event(
+                "btc_alert_liquidation_failed",
+                spec.order_id,
+                {
+                    "order_type": "oco",
+                    "symbol": symbol,
+                    "btc_price": btc_price,
+                    "variation": variation,
+                    "error": "qty_non_valida",
+                },
+            )
+            return False
+
+        for leg in spec.legs:
+            current_idx = int(leg.get("leg_index"))
+            if (leg.get("status") or "waiting").lower() != "waiting":
+                continue
+            leg["status"] = "cancelled"
+            self._storage.update_oco_leg_status(spec.order_id, current_idx, "cancelled")
+            linked_id = leg.get("core_order_id")
+            if linked_id:
+                try:
+                    if leg.get("ordertype") == "trailing":
+                        self._cancel_linked_trailing_order(int(linked_id))
+                    else:
+                        self._manager.cancel_order(int(linked_id))
+                except Exception:
+                    pass
+            self._storage.append_event("oco_leg_cancelled", spec.order_id, {"leg_index": current_idx, "reason": "btc_drop"})
+
+        try:
+            exchange_resp = self._execute_market_order_on_exchange("sell", symbol, qty)
+            spec.status = "filled"
+            self._storage.update_order_status(spec.order_id, "filled")
+            self._storage.append_event(
+                "btc_alert_liquidated",
+                spec.order_id,
+                {
+                    "order_type": "oco",
+                    "symbol": symbol,
+                    "qty": qty,
+                    "btc_price": btc_price,
+                    "variation": variation,
+                    **self._exchange_fields(exchange_resp),
+                },
+            )
+            self._queue_message(
+                spec.chat_id,
+                f"BTC DROP PROTECTION: liquidato OCO SELL {spec.order_id} su {symbol} (caduta {variation:.4f}%)",
+            )
+            return True
+        except Exception as exc:
+            spec.status = "error"
+            self._handle_exchange_error(
+                order_id=spec.order_id,
+                chat_id=spec.chat_id,
+                event_type="btc_alert_liquidation_failed",
+                user_msg_prefix=f"liquidazione BTC OCO sell {symbol}",
+                payload={
+                    "order_type": "oco",
+                    "symbol": symbol,
+                    "qty": qty,
+                    "btc_price": btc_price,
+                    "variation": variation,
+                },
+                exc=exc,
+            )
+            return False
+
+    def _cancel_btc_protected_buy_order(self, order_id: int, chat_id: int, symbol: str, order_type: str, btc_price: float, variation: float) -> bool:
+        try:
+            self._cancel_order_by_id(order_id)
+            self._storage.append_event(
+                "btc_alert_buy_cancelled",
+                order_id,
+                {
+                    "order_type": order_type,
+                    "symbol": symbol,
+                    "btc_price": btc_price,
+                    "variation": variation,
+                },
+            )
+            self._queue_message(
+                chat_id,
+                f"BTC DROP PROTECTION: cancellato BUY {order_type} {order_id} su {symbol} (caduta {variation:.4f}%)",
+            )
+            return True
+        except Exception as exc:
+            self._storage.append_event(
+                "btc_alert_buy_cancel_failed",
+                order_id,
+                {
+                    "order_type": order_type,
+                    "symbol": symbol,
+                    "btc_price": btc_price,
+                    "variation": variation,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            self._queue_message(chat_id, f"BTC DROP PROTECTION: errore cancellazione BUY {order_id}: {exc}")
+            return False
+
+    def _apply_btc_drop_protection(self, btc_price: float, variation: float) -> Tuple[List[int], List[int]]:
+        liquidated_ids: List[int] = []
+        cancelled_buy_ids: List[int] = []
+
+        for spec in list(getattr(self, "_oco_orders", [])):
+            if spec.status != "active" or spec.side != "sell" or not spec.btc_alert_liquidate:
+                continue
+            if self._liquidate_oco_sell_order(spec, btc_price, variation):
+                liquidated_ids.append(spec.order_id)
+
+        for spec in list(self._sell_orders):
+            if spec.status != "active" or not spec.btc_alert_liquidate:
+                continue
+            if self._liquidate_simple_sell_order(spec, btc_price, variation):
+                liquidated_ids.append(spec.order_id)
+
+        for spec in list(self._trailing_sell_orders):
+            if spec.status != "active" or not spec.btc_alert_liquidate:
+                continue
+            if spec.oco_parent_order_id is not None:
+                continue
+            if self._liquidate_trailing_sell_order(spec, btc_price, variation):
+                liquidated_ids.append(spec.order_id)
+
+        for spec in list(getattr(self, "_oco_orders", [])):
+            if spec.status != "active" or spec.side != "buy" or not spec.btc_alert_liquidate:
+                continue
+            if self._cancel_btc_protected_buy_order(spec.order_id, spec.chat_id, spec.symbol, "oco_buy", btc_price, variation):
+                cancelled_buy_ids.append(spec.order_id)
+
+        for spec in list(self._buy_orders):
+            if spec.status != "active" or not spec.btc_alert_liquidate:
+                continue
+            if self._cancel_btc_protected_buy_order(spec.order_id, spec.chat_id, spec.symbol, "simple_buy", btc_price, variation):
+                cancelled_buy_ids.append(spec.order_id)
+
+        for spec in list(self._function_orders):
+            if spec.status != "active" or not spec.btc_alert_liquidate:
+                continue
+            if self._cancel_btc_protected_buy_order(spec.order_id, spec.chat_id, spec.symbol, "function_buy", btc_price, variation):
+                cancelled_buy_ids.append(spec.order_id)
+
+        for spec in list(self._trailing_buy_orders):
+            if spec.status != "active" or not spec.btc_alert_liquidate:
+                continue
+            if self._cancel_btc_protected_buy_order(spec.order_id, spec.chat_id, spec.symbol, "trailing_buy", btc_price, variation):
+                cancelled_buy_ids.append(spec.order_id)
+
+        return liquidated_ids, cancelled_buy_ids
+
+    def _eval_btc_liquidation(self, chat_id: Optional[int], now: float):
+        if now - self._last_btc_liquidation_tick < 60:
+            return
+        self._last_btc_liquidation_tick = now
+        if self._btc_alert_liquidation_percent <= 0:
+            return
+
+        price = self._feed.get_price("BTCUSDT", self._default_tf_minutes)
+        if self._btc_alert_liquidation_reference_price is None:
+            self._btc_alert_liquidation_reference_price = price
+            return
+
+        variation = ((price - self._btc_alert_liquidation_reference_price) / self._btc_alert_liquidation_reference_price) * 100.0
+        threshold = abs(self._btc_alert_liquidation_percent)
+        if variation <= -threshold:
+            liquidated_ids, cancelled_buy_ids = self._apply_btc_drop_protection(price, variation)
+            if chat_id is not None:
+                if liquidated_ids or cancelled_buy_ids:
+                    details: List[str] = []
+                    if liquidated_ids:
+                        details.append("liquidati=" + ",".join(str(x) for x in liquidated_ids))
+                    if cancelled_buy_ids:
+                        details.append("buy_cancellati=" + ",".join(str(x) for x in cancelled_buy_ids))
+                    self._queue_message(chat_id, f"BTC DROP PROTECTION: caduta {variation:.4f}% -> {'; '.join(details)}")
+                else:
+                    self._queue_message(chat_id, f"BTC DROP PROTECTION: caduta {variation:.4f}% ma nessun ordine flaggato attivo")
+        self._btc_alert_liquidation_reference_price = price
+
     def _tracked_symbols(self) -> List[str]:
         symbols = {"BTCUSDT"}
         symbols.update(s.symbol for s in self._sell_orders if s.status == "active")
@@ -3936,6 +4402,7 @@ class TelegramTradingBot:
             self._eval_trailing_buy(now_i)
             self._sync_simple_order_schedule()
             self._eval_alert(chat_id, now)
+            self._eval_btc_liquidation(chat_id, now)
             self._eval_echo(chat_id, now)
 
             if now - self._last_archive_check > 3600:

@@ -134,3 +134,53 @@ Esempio (non-interactive):
 ```
 
 Importante: lo script NON scriverà segreti sensibili nella `.env` a meno che tu non lo faccia manualmente: alla fine mostra esplicitamente il promemoria per inserire `BOT_TOKEN`, `BINANCE_API_KEY` e `BINANCE_SECRET_KEY`.
+
+## Checkpoint tecnico attuale (2026-04-12)
+
+Git checkpoint:
+- Branch: `featureFinale00`
+- HEAD: `a0e26e0`
+- Working tree modificata su:
+  - `README.md`
+  - `storage.py`
+  - `telegram_bot.py`
+  - `tests/test_oco_integration.py`
+  - `tests/test_oco_storage.py`
+  - `tests/test_btc_drop_ui_flag.py` (nuovo file)
+
+Feature principale implementata in questa fase:
+- `BTC Drop Protection` side-aware:
+  - SELL flaggati -> liquidazione a mercato;
+  - BUY flaggati -> cancellazione preventiva.
+
+Comando operativo nuovo/esteso:
+- `/ad PERCENT` per soglia drop BTC (`/ad 0` disattiva).
+
+Validazione effettuata al checkpoint:
+```powershell
+PYTHONPATH=. pytest -q
+```
+Risultato: `54 passed, 4 warnings`.
+
+## Ripartenza in altro contesto (procedura rapida)
+
+1. Allinea branch/stato:
+```powershell
+git branch --show-current
+git rev-parse --short HEAD
+git status --short
+```
+
+2. Esegui test completi:
+```powershell
+PYTHONPATH=. pytest -q
+```
+
+3. Carica il contesto documentale minimo:
+- `README.md`
+- `ARCHITECTURE.md`
+- `docs/HANDOFF.md`
+- `docs/ai/AI_HANDOFF_CURRENT.md`
+
+4. Prompt consigliato per la nuova sessione AI:
+"Apri README.md, ARCHITECTURE.md, docs/HANDOFF.md e docs/ai/AI_HANDOFF_CURRENT.md. Conferma il checkpoint git corrente, riesegui PYTHONPATH=. pytest -q e proponi il prossimo passo minimo sicuro con test." 

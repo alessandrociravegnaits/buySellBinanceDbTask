@@ -170,7 +170,7 @@ Formato supportato:
 
 Le due gambe sono indipendenti: puoi scegliere liberamente il mode per ciascuna leg.
 
-## BTC Sell Drop Liquidation
+## BTC Drop Protection
 
 La liquidazione automatica su BTC e separata dall'alert visivo (`/a`):
 
@@ -187,17 +187,23 @@ Semantica trigger liquidazione:
 Ambito ordini liquidati:
 
 - Solo ordini con flag `btc_alert_liquidate=true`.
-- Copertura: sell semplici, trailing sell e OCO sell (incluse leg/sibling cancellate prima del market sell finale).
+- Comportamento side-aware:
+	- ordini **SELL** flaggati: liquidazione forzata a mercato;
+	- ordini **BUY** flaggati: cancellazione preventiva dell'ordine pendente.
+- Copertura: semplici, function buy, trailing buy/sell, OCO buy/sell.
 
 Come impostare il flag ordine:
 
 - Slash command: aggiungi `btc_alert=1` (equivalenti: `btc_alert`, `btc_liquidate`) ai comandi ordine.
-- Wizard UI: dopo il timeframe viene chiesto se abilitare la liquidazione su caduta BTC per l'ordine corrente.
+- Wizard UI: durante la creazione ordine viene chiesto se abilitare la protezione BTC drop per l'ordine corrente.
 
 Esempi:
 
 ```text
 /s ETHUSDT > 3000 0.25 tf=15 btc_alert=1
+/b BTCUSDT < 65000 0.01 tf=15 btc_alert=1
+/f BTCUSDT > 62000 0.01 1.5 tf=15 btc_alert=1
+/B BTCUSDT 1.2 0.01 64000 tf=15 btc_alert=1
 /S BNBUSDT 1.5 0.5 tf=15 btc_alert=1
 /ad 0.5
 ```
@@ -340,4 +346,31 @@ print(last["rsi_14"], last["adx_14"], last["volume_ma_20"])
 
 Compatibilità MCP finance:
 - puoi usare `TechnicalIndicators.from_mcp_price_history(payload)` passando una lista di record OHLCV o un dizionario con chiave `data`/`prices`/`ohlcv`.
+
+## Checkpoint implementazione (2026-04-12)
+
+Stato codice al checkpoint:
+- Branch: `featureFinale00`
+- HEAD: `a0e26e0`
+- Feature completata: `BTC Drop Protection` side-aware.
+
+Semantica operativa corrente:
+- SELL attivi con `btc_alert_liquidate=true`: liquidazione forzata a mercato su drop BTC oltre soglia.
+- BUY attivi con `btc_alert_liquidate=true`: cancellazione preventiva ordine pendente su drop BTC oltre soglia.
+- Trigger solo su discesa: `variation <= -threshold`.
+- Configurazione soglia: comando `/ad PERCENT` (`/ad 0` disattiva).
+
+Superficie di configurazione flag:
+- Slash token: `btc_alert`, `btc_liquidate`, `btc_alert=1|0|true|false`.
+- Wizard guidato: supportato su simple buy/sell, function buy, trailing buy/sell, OCO buy/sell.
+
+Validazione eseguita al checkpoint:
+- `PYTHONPATH=. pytest -q`
+- Risultato: `54 passed, 4 warnings`.
+
+Ripartenza rapida in altro contesto:
+1. Esegui `git status --short` e verifica che i file modificati siano quelli attesi.
+2. Esegui `PYTHONPATH=. pytest -q`.
+3. Apri `docs/HANDOFF.md` e `docs/ai/AI_HANDOFF_CURRENT.md`.
+4. Riparti dal blocco "Prossime attivita" nel file `docs/ai/AI_HANDOFF_CURRENT.md`.
 
