@@ -725,8 +725,17 @@ class TelegramTradingBot:
     def _main_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton("🆕 Nuovo ordine"), KeyboardButton("📋 Ordini attivi")],
-            [KeyboardButton("⚙️ Impostazioni"), KeyboardButton("ℹ️ Info")],
-            [KeyboardButton("💰 Account")],
+            [KeyboardButton("📜 Ordini storici"), KeyboardButton("⚙️ Impostazioni")],
+            [KeyboardButton("ℹ️ Info"), KeyboardButton("💰 Account")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _orders_history_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("1gg"), KeyboardButton("3gg")],
+            [KeyboardButton("7gg"), KeyboardButton("30gg")],
+            [KeyboardButton("← Indietro"), KeyboardButton("Annulla")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -1783,6 +1792,10 @@ class TelegramTradingBot:
         if lowered == "ordini attivi":
             await self._cmd_o(update)
             return
+        if lowered == "ordini storici":
+            self._set_ui_state(context, "history_days", {})
+            await self._send(update, "Ordini storici: scegli intervallo.", reply_markup=self._orders_history_keyboard())
+            return
         if lowered == "impostazioni":
             await self._show_settings_menu(update)
             return
@@ -2017,6 +2030,35 @@ class TelegramTradingBot:
                 await self._cmd_simple(update, parts, side=draft["side"])
                 self._clear_ui_state(context)
                 await self._show_orders_menu(update)
+                return True
+
+            if state == "history_days":
+                if normalized == "indietro":
+                    self._clear_ui_state(context)
+                    await self._show_main_menu(update)
+                    return True
+                days_map = {
+                    "1gg": 1,
+                    "1 giorno": 1,
+                    "1 giorni": 1,
+                    "3gg": 3,
+                    "3 giorni": 3,
+                    "7gg": 7,
+                    "7 giorni": 7,
+                    "30gg": 30,
+                    "30 giorni": 30,
+                }
+                days = None
+                for key, value in days_map.items():
+                    if key in normalized:
+                        days = value
+                        break
+                if days is None:
+                    await self._send(update, "Scelta non valida: seleziona 1gg, 3gg, 7gg o 30gg", reply_markup=self._orders_history_keyboard())
+                    return True
+                await self._cmd_history_orders(update, days)
+                self._clear_ui_state(context)
+                await self._show_main_menu(update)
                 return True
 
             if state == "function_symbol":
@@ -3381,6 +3423,84 @@ class TelegramTradingBot:
                 lines.append(str(o))
         lines.append(f"Timeframe={self._timeframe_seconds}s echo={self._echo_enabled} alert={self._alert_enabled}")
         await self._send(update, "\n".join(lines))
+
+    async def _cmd_history_orders(self, update: Update, days: int):
+        def _post_fill_label(spec: Optional[Dict[str, Any]]) -> str:
+            if not spec:
+                return "none"
+            if spec.get("type") != "oco":
+                return str(spec.get("type"))
+            tp = spec.get("tp") or {}
+            sl = spec.get("sl") or {}
+            return f"oco(tp={tp.get('mode')}:{tp.get('value')},sl={sl.get('mode')}:{sl.get('value')})"
+
+        def _human_time(ts: Optional[Any]) -> str:
+            if ts is None:
+                return "-"
+            try:
+                return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(ts)))
+            except Exception:
+                return str(ts)
+
+        data = self._storage.load_historical_orders(days)
+        lines = [f"Ordini storici ultimi {days} giorni:"]
+
+        sections = [
+            ("simple", "SEMPLICI"),
+            ("function", "FUNCTION"),
+            ("trailing", "TRAILING"),
+            ("oco", "OCO"),
+        ]
+        found_any = False
+
+        for key, title in sections:
+            rows = data.get(key, [])
+            if not rows:
+                continue
+            found_any = True
+            lines.append("")
+            lines.append(f"{title}:")
+            for row in rows:
+                oid = row.get("order_id")
+                status = row.get("status")
+                updated_at = _human_time(row.get("updated_at"))
+                tf = row.get("tf_minutes")
+                if key == "simple":
+                    lines.append(
+                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
+                    )
+                elif key == "function":
+                    lines.append(
+                        f"{oid} [{status}] {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} pct={row.get('percent')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
+                    )
+                elif key == "trailing":
+                    lines.append(
+                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} pct={row.get('percent')} qty={row.get('qty')} limit={row.get('limit_price')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
+                    )
+                else:
+                    legs = row.get("legs") or []
+                    legs_text = []
+                    for leg in legs:
+                        leg_parts = [f"leg{leg.get('leg_index')}", str(leg.get('ordertype'))]
+                        if leg.get("price") is not None:
+                            leg_parts.append(f"price={leg.get('price')}")
+                        if leg.get("stop_price") is not None:
+                            leg_parts.append(f"stop={leg.get('stop_price')}")
+                        if leg.get("trail_percent") is not None:
+                            leg_parts.append(f"trail={leg.get('trail_percent')}%")
+                        leg_parts.append(f"qty={leg.get('qty')}")
+                        if leg.get("core_order_id") is not None:
+                            leg_parts.append(f"core={leg.get('core_order_id')}")
+                        leg_parts.append(f"status={leg.get('status')}")
+                        legs_text.append("(" + ", ".join(leg_parts) + ")")
+                    lines.append(
+                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} parent={row.get('parent_order_id')} legs={' '.join(legs_text)} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')}"
+                    )
+
+        if not found_any:
+            lines.append("Nessun ordine trovato nel periodo selezionato.")
+
+        await self._send_chunked(update, lines)
 
     async def _cmd_c(self, update: Update, parts: List[str]):
         if len(parts) < 2:

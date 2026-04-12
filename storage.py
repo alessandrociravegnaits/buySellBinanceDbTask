@@ -4,7 +4,7 @@ import json
 import os
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, cast
 
 import logging
@@ -550,6 +550,80 @@ class SQLiteStorage:
                 WHERE o.status = 'active'
                 ORDER BY o.order_id
                 """
+            ).fetchall()
+
+            oco = []
+            for p in oco_parents:
+                oid = p["order_id"]
+                legs = self._conn.execute(
+                    "SELECT leg_index, ordertype, price, stop_price, limit_price, trail_percent, qty, side, core_order_id, status FROM order_oco_leg WHERE order_id = ? ORDER BY leg_index",
+                    (oid,),
+                ).fetchall()
+                oco.append({
+                    **dict(p),
+                    "legs": [dict(l) for l in legs],
+                })
+
+        return cast(Dict[str, List[Dict[str, Any]]], {
+            "simple": [dict(r) for r in simple],
+            "function": [dict(r) for r in function],
+            "trailing": [dict(r) for r in trailing],
+            "oco": oco,
+        })
+
+    def load_historical_orders(self, days: int) -> Dict[str, List[Dict[str, Any]]]:
+        if days <= 0:
+            raise ValueError("days deve essere > 0")
+
+        cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=days)).replace(microsecond=0).isoformat()
+        with self._lock:
+            simple = self._conn.execute(
+                """
+                SELECT o.order_id, o.chat_id, o.status, o.kind, o.tf_minutes, o.next_eval_at, o.last_eval_at, o.created_at, o.updated_at,
+                       s.side, s.symbol, s.op, s.trigger_value, s.qty, s.hook_symbol, s.core_order_id, s.post_fill_action, s.acquistopulito
+                FROM orders o
+                JOIN order_simple s ON s.order_id = o.order_id
+                WHERE o.status != 'active' AND o.updated_at >= ?
+                ORDER BY o.updated_at DESC, o.order_id DESC
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+
+            function = self._conn.execute(
+                """
+                SELECT o.order_id, o.chat_id, o.status, o.kind, o.tf_minutes, o.next_eval_at, o.last_eval_at, o.created_at, o.updated_at,
+                       f.symbol, f.op, f.trigger_value, f.qty, f.percent, f.hook_symbol, f.bought, f.prev_price, f.post_fill_action, f.acquistopulito
+                FROM orders o
+                JOIN order_function f ON f.order_id = o.order_id
+                WHERE o.status != 'active' AND o.updated_at >= ?
+                ORDER BY o.updated_at DESC, o.order_id DESC
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+
+            trailing = self._conn.execute(
+                """
+                SELECT o.order_id, o.chat_id, o.status, o.kind, o.tf_minutes, o.next_eval_at, o.last_eval_at, o.created_at, o.updated_at,
+                       t.side, t.symbol, t.qty, t.percent, t.limit_price, t.hook_symbol, t.armed, t.max_price, t.min_price, t.arm_op,
+                       t.post_fill_action, t.acquistopulito, t.oco_parent_order_id, t.oco_leg_index
+                FROM orders o
+                JOIN order_trailing t ON t.order_id = o.order_id
+                WHERE o.status != 'active' AND o.updated_at >= ?
+                ORDER BY o.updated_at DESC, o.order_id DESC
+                """,
+                (cutoff_iso,),
+            ).fetchall()
+
+            oco_parents = self._conn.execute(
+                """
+                SELECT o.order_id, o.chat_id, o.status, o.kind, o.tf_minutes, o.next_eval_at, o.last_eval_at, o.created_at, o.updated_at,
+                       oc.symbol, oc.side, oc.parent_order_id, oc.acquistopulito
+                FROM orders o
+                JOIN order_oco oc ON oc.order_id = o.order_id
+                WHERE o.status != 'active' AND o.updated_at >= ?
+                ORDER BY o.updated_at DESC, o.order_id DESC
+                """,
+                (cutoff_iso,),
             ).fetchall()
 
             oco = []

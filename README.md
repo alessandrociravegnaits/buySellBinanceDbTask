@@ -139,6 +139,10 @@ Comandi supportati (interfaccia Telegram):
 - `/info` (mostra guida comandi e, nella sezione "Valori correnti", i runtime settings)
 - `/t` `/a` `/ad` `/e` `/s` `/b` `/f` `/S` `/B` `/c ORDER_ID` oppure `/c a` `/o`
 
+Menu principale:
+- `📜 Ordini storici` apre un sottomenu `1gg`, `3gg`, `7gg`, `30gg` e mostra gli ordini non attivi chiusi nel periodo selezionato.
+- Questa prima versione legge solo il DB principale (`data/bot.sqlite3`), non gli archivi mensili in `data/archive/`.
+
 Nel menu `Impostazioni -> Cancella ordine` puoi ora toccare direttamente i bottoni sintetici `#id:pair:tipo` (es. `#42:BTCUSDT:buy`) senza digitare l'ID a mano.
 
 ## Post-Fill Auto OCO (nuovo)
