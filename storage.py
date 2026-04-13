@@ -223,6 +223,132 @@ class SQLiteStorage:
             )
             self._conn.commit()
 
+    @staticmethod
+    def _extract_event_price(payload_json: Optional[str]) -> Optional[float]:
+        if not payload_json:
+            return None
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            return None
+
+        for key in ("price", "fill_price", "entry_price", "exit_price"):
+            value = payload.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _gain_event_types(kind: str, side: Optional[str]) -> List[str]:
+        kind_norm = (kind or "").strip().lower()
+        side_norm = (side or "").strip().lower()
+        if kind_norm == "simple":
+            return ["simple_filled"]
+        if kind_norm == "function":
+            return ["function_filled"]
+        if kind_norm == "trailing":
+            return ["trailing_sell_filled"] if side_norm == "sell" else ["trailing_buy_filled"]
+        if kind_norm == "oco":
+            return ["oco_leg_filled"]
+        return []
+
+    def _get_order_meta_locked(self, order_id: int) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            """
+            SELECT o.kind,
+                   s.side AS simple_side,
+                   t.side AS trailing_side,
+                   oc.side AS oco_side,
+                   oc.parent_order_id
+            FROM orders o
+            LEFT JOIN order_simple s ON s.order_id = o.order_id
+            LEFT JOIN order_trailing t ON t.order_id = o.order_id
+            LEFT JOIN order_oco oc ON oc.order_id = o.order_id
+            WHERE o.order_id = ?
+            """,
+            (order_id,),
+        ).fetchone()
+        if not row:
+            return None
+
+        side = row["simple_side"] or row["trailing_side"] or row["oco_side"]
+        return {
+            "kind": row["kind"],
+            "side": side,
+            "parent_order_id": row["parent_order_id"],
+        }
+
+    def _get_first_event_price_locked(self, order_id: int, event_types: List[str]) -> Optional[float]:
+        if not event_types:
+            return None
+        placeholders = ",".join(["?"] * len(event_types))
+        rows = self._conn.execute(
+            f"""
+            SELECT payload_json
+            FROM event_log
+            WHERE order_id = ? AND event_type IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+            """,
+            (order_id, *event_types),
+        ).fetchall()
+        for row in rows:
+            price = self._extract_event_price(row["payload_json"])
+            if price is not None:
+                return price
+        return None
+
+    def _get_child_oco_order_id_locked(self, parent_order_id: int) -> Optional[int]:
+        row = self._conn.execute(
+            "SELECT order_id FROM order_oco WHERE parent_order_id = ? ORDER BY order_id ASC LIMIT 1",
+            (parent_order_id,),
+        ).fetchone()
+        return int(row["order_id"]) if row else None
+
+    def _get_order_gain_summary_locked(self, order_id: int) -> Dict[str, Optional[float]]:
+        meta = self._get_order_meta_locked(order_id)
+        if not meta:
+            return {"entry_price": None, "exit_price": None, "gain_pct": None}
+
+        kind = (meta.get("kind") or "").strip().lower()
+        side = (meta.get("side") or "").strip().lower()
+        parent_order_id = meta.get("parent_order_id")
+
+        entry_price: Optional[float] = None
+        exit_price: Optional[float] = None
+
+        if kind == "oco" and parent_order_id is not None:
+            parent_meta = self._get_order_meta_locked(int(parent_order_id))
+            if parent_meta:
+                parent_kind = (parent_meta.get("kind") or "").strip().lower()
+                parent_side = (parent_meta.get("side") or "").strip().lower()
+                parent_event_types = self._gain_event_types(parent_kind, parent_side)
+                entry_price = self._get_first_event_price_locked(int(parent_order_id), parent_event_types)
+                exit_price = self._get_first_event_price_locked(order_id, ["oco_leg_filled"])
+        else:
+            event_types = self._gain_event_types(kind, side)
+            entry_price = self._get_first_event_price_locked(order_id, event_types)
+            child_oco_order_id = self._get_child_oco_order_id_locked(order_id)
+            if child_oco_order_id is not None:
+                exit_price = self._get_first_event_price_locked(child_oco_order_id, ["oco_leg_filled"])
+
+        gain_pct: Optional[float] = None
+        if entry_price is not None and exit_price is not None and entry_price != 0:
+            gain_pct = ((exit_price - entry_price) / entry_price) * 100.0
+
+        return {
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "gain_pct": gain_pct,
+        }
+
+    def get_order_gain_summary(self, order_id: int) -> Dict[str, Optional[float]]:
+        with self._lock:
+            return self._get_order_gain_summary_locked(order_id)
+
     def save_simple_order(
         self,
         order_id: int,
@@ -601,6 +727,10 @@ class SQLiteStorage:
                 (cutoff_iso,),
             ).fetchall()
 
+            simple_rows = [dict(r) for r in simple]
+            for row in simple_rows:
+                row.update(self._get_order_gain_summary_locked(int(row["order_id"])))
+
             function = self._conn.execute(
                 """
                 SELECT o.order_id, o.chat_id, o.status, o.kind, o.tf_minutes, o.next_eval_at, o.last_eval_at, o.created_at, o.updated_at,
@@ -613,6 +743,10 @@ class SQLiteStorage:
                 """,
                 (cutoff_iso,),
             ).fetchall()
+
+            function_rows = [dict(r) for r in function]
+            for row in function_rows:
+                row.update(self._get_order_gain_summary_locked(int(row["order_id"])))
 
             trailing = self._conn.execute(
                 """
@@ -627,6 +761,10 @@ class SQLiteStorage:
                 """,
                 (cutoff_iso,),
             ).fetchall()
+
+            trailing_rows = [dict(r) for r in trailing]
+            for row in trailing_rows:
+                row.update(self._get_order_gain_summary_locked(int(row["order_id"])))
 
             oco_parents = self._conn.execute(
                 """
@@ -647,15 +785,15 @@ class SQLiteStorage:
                     "SELECT leg_index, ordertype, price, stop_price, limit_price, trail_percent, qty, side, core_order_id, status FROM order_oco_leg WHERE order_id = ? ORDER BY leg_index",
                     (oid,),
                 ).fetchall()
-                oco.append({
-                    **dict(p),
-                    "legs": [dict(l) for l in legs],
-                })
+                row = dict(p)
+                row.update(self._get_order_gain_summary_locked(int(oid)))
+                row["legs"] = [dict(l) for l in legs]
+                oco.append(row)
 
         return cast(Dict[str, List[Dict[str, Any]]], {
-            "simple": [dict(r) for r in simple],
-            "function": [dict(r) for r in function],
-            "trailing": [dict(r) for r in trailing],
+            "simple": simple_rows,
+            "function": function_rows,
+            "trailing": trailing_rows,
             "oco": oco,
         })
 

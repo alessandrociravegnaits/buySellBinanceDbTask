@@ -181,3 +181,72 @@ def test_history_flow_empty_results(tmp_path):
     assert "Nessun ordine trovato" in output
 
     bot._storage.close()
+
+
+def test_history_flow_renders_gain_for_linked_exit(tmp_path):
+    bot = _make_bot(tmp_path)
+    storage = bot._storage
+
+    parent_oid = storage.next_order_id()
+    storage.save_simple_order(
+        order_id=parent_oid,
+        chat_id=1,
+        side="buy",
+        symbol="BTCUSDT",
+        op="<",
+        trigger_value=60000.0,
+        qty=0.001,
+        hook_symbol=None,
+        core_order_id=parent_oid,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        acquistopulito=True,
+        status="filled",
+    )
+
+    oco_oid = storage.next_order_id()
+    storage.save_oco_order(
+        order_id=oco_oid,
+        chat_id=1,
+        symbol="BTCUSDT",
+        side="sell",
+        legs=[{"leg_index": 1, "ordertype": "limit", "price": 110.0, "qty": 0.001, "side": "sell"}],
+        hook_symbol=None,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        parent_order_id=parent_oid,
+        status="filled",
+    )
+
+    storage.append_event("simple_filled", parent_oid, {"price": 100.0, "exchange_symbol": "BTCUSDT"})
+    storage.append_event(
+        "oco_leg_filled",
+        oco_oid,
+        {"leg_index": 1, "ordertype": "limit", "price": 110.0, "exchange_symbol": "BTCUSDT"},
+    )
+    _set_order_updated_at(storage, parent_oid, (datetime.now(timezone.utc) - timedelta(days=1)).replace(microsecond=0).isoformat())
+    _set_order_updated_at(storage, oco_oid, (datetime.now(timezone.utc) - timedelta(days=1)).replace(microsecond=0).isoformat())
+
+    captured = {"text": "", "chunks": []}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["text"] = text
+
+    async def _capture_chunked(update, lines, max_chars=3500):
+        captured["chunks"] = list(lines)
+
+    bot._send = _capture_send
+    bot._send_chunked = _capture_chunked
+
+    context = _DummyContext()
+    context.user_data["ui_state"] = "history_days"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "1gg"))
+
+    output = "\n".join(captured["chunks"] or [captured["text"]])
+    assert "gain=+10.00%" in output
+    assert "100 -> 110" in output
+
+    bot._storage.close()

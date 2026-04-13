@@ -248,3 +248,61 @@ def test_btc_alert_liquidate_flag_persistence(tmp_path):
         assert row is not None and int(row[0]) == 1
     conn.close()
     storage.close()
+
+
+def test_historical_gain_summary_uses_linked_oco_exit(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    storage = SQLiteStorage(db_path, archive_dir)
+
+    parent_id = storage.next_order_id()
+    storage.save_simple_order(
+        order_id=parent_id,
+        chat_id=1,
+        side="buy",
+        symbol="BTCUSDT",
+        op="<",
+        trigger_value=60000.0,
+        qty=0.01,
+        hook_symbol=None,
+        core_order_id=parent_id,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        status="filled",
+    )
+
+    oco_id = storage.next_order_id()
+    storage.save_oco_order(
+        order_id=oco_id,
+        chat_id=1,
+        symbol="BTCUSDT",
+        side="sell",
+        legs=[{"leg_index": 1, "ordertype": "limit", "price": 110.0, "qty": 0.01, "side": "sell"}],
+        hook_symbol=None,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        parent_order_id=parent_id,
+        status="filled",
+    )
+
+    storage.append_event("simple_filled", parent_id, {"price": 100.0, "exchange_symbol": "BTCUSDT"})
+    storage.append_event(
+        "oco_leg_filled",
+        oco_id,
+        {"leg_index": 1, "ordertype": "limit", "price": 110.0, "exchange_symbol": "BTCUSDT"},
+    )
+
+    summary = storage.get_order_gain_summary(parent_id)
+    assert summary["entry_price"] == 100.0
+    assert summary["exit_price"] == 110.0
+    assert round(float(summary["gain_pct"]), 2) == 10.0
+
+    historical = storage.load_historical_orders(7)
+    parent_row = next(row for row in historical["simple"] if row["order_id"] == parent_id)
+    assert round(float(parent_row["gain_pct"]), 2) == 10.0
+
+    storage.close()

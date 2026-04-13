@@ -3627,6 +3627,22 @@ class TelegramTradingBot:
             except Exception:
                 return str(ts)
 
+        def _format_price(value: Optional[Any]) -> str:
+            if value is None:
+                return "-"
+            try:
+                return f"{float(value):.8g}"
+            except Exception:
+                return str(value)
+
+        def _format_gain(row: Dict[str, Any]) -> str:
+            gain_pct = row.get("gain_pct")
+            entry_price = row.get("entry_price")
+            exit_price = row.get("exit_price")
+            if gain_pct is None or entry_price is None or exit_price is None:
+                return "N/A"
+            return f"{float(gain_pct):+.2f}% [{_format_price(entry_price)} -> {_format_price(exit_price)}]"
+
         data = self._storage.load_historical_orders(days)
         lines = [f"Ordini storici ultimi {days} giorni:"]
 
@@ -3652,15 +3668,15 @@ class TelegramTradingBot:
                 tf = row.get("tf_minutes")
                 if key == "simple":
                     lines.append(
-                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
+                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} tf={tf}m updated={updated_at} gain={_format_gain(row)} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
                     )
                 elif key == "function":
                     lines.append(
-                        f"{oid} [{status}] {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} pct={row.get('percent')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
+                        f"{oid} [{status}] {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} pct={row.get('percent')} tf={tf}m updated={updated_at} gain={_format_gain(row)} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
                     )
                 elif key == "trailing":
                     lines.append(
-                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} pct={row.get('percent')} qty={row.get('qty')} limit={row.get('limit_price')} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
+                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} pct={row.get('percent')} qty={row.get('qty')} limit={row.get('limit_price')} tf={tf}m updated={updated_at} gain={_format_gain(row)} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
                     )
                 else:
                     legs = row.get("legs") or []
@@ -3679,7 +3695,7 @@ class TelegramTradingBot:
                         leg_parts.append(f"status={leg.get('status')}")
                         legs_text.append("(" + ", ".join(leg_parts) + ")")
                     lines.append(
-                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} parent={row.get('parent_order_id')} legs={' '.join(legs_text)} tf={tf}m updated={updated_at} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')}"
+                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} parent={row.get('parent_order_id')} legs={' '.join(legs_text)} tf={tf}m updated={updated_at} gain={_format_gain(row)} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')}"
                     )
 
         if not found_any:
