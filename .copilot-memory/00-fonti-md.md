@@ -4,6 +4,7 @@
 - `ARCHITECTURE.md`: architettura runtime, OCO post-fill, schema e flussi.
 - `README.md`: setup, avvio, comandi base.
 - `.copilot-memory/06-ordinepulito-acquistopulito.md`: riassunto tematico su ordinepulito/acquistopulito.
+- `.copilot-memory/07-documentazione-gain-next.md`: riassunto tematico su gain storico, trailing next e documentazione aggiornata.
 - `progettoOCO.md`: specifica OCO e post_fill_action.
 - `python_telegram_bot_summary.md`: note libreria telegram bot.
 - `ISTRUZIONI_persistenza_contesto_cambio_macchina.md`: handoff tra macchine.
@@ -22,4 +23,4 @@
 - `docs/ai/AI_HANDOFF_TEMPLATE.md`
 - `docs/ai/AI_PASS1_LAST_RUN.md`
 
-Aggiornato: 2026-04-11
+Aggiornato: 2026-04-14

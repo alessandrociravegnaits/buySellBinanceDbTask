@@ -102,6 +102,11 @@ Buone pratiche:
 - Motore: `core.py` (gestione ordini e poller).
 - Storage: `storage.py` (persistence, archive, schema).
 
+## Aggiornamenti recenti
+- Cronologia ordini: ora mostra anche il `gain%` ricostruito dagli eventi storici quando sono disponibili entry e exit.
+- Trailing sell: il campo `next` viene aggiornato a ogni valutazione dovuta, come già avviene per gli altri flussi schedulati.
+- Copertura test: aggiunte regressioni su gain storico, sync `next_eval_at` e comportamento trailing/OCO.
+
 Per istruzioni di migrazione e handoff completo vedere: `docs/HANDOFF.md`
 
 Se hai bisogno, posso aggiungere una sezione con esempi passo-passo per creare il primo ordine OCO via UI Telegram.

@@ -103,6 +103,11 @@ Contatti e riferimenti
 
 Se vuoi, posso aggiungere script PowerShell/Batch per automatizzare i passaggi (clone->venv->install->test->start).
 
+## Stato funzionale recente
+- Cronologia ordini: supporta la visualizzazione del `gain%` ricostruito da `event_log` quando i fill sono presenti.
+- Schedulazione trailing sell: il campo `next_eval_at` viene aggiornato a ogni tick dovuto, così la vista ordini attivi resta coerente.
+- Verifica recente: suite completa verde con regressioni dedicate su gain, OCO e sync ordini.
+
 Script di bootstrap
 - Abbiamo incluso uno script PowerShell di automazione in `scripts/bootstrap.ps1` per Windows PowerShell.
 - Esempi d'uso:

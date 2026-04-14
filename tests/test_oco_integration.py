@@ -4,7 +4,7 @@ import sqlite3
 import time
 
 from price_feeds import MockPriceFeed
-from telegram_bot import FunctionSpec, OcoSpec, SimpleOrderSpec, TelegramTradingBot, TrailingBuySpec
+from telegram_bot import FunctionSpec, OcoSpec, SimpleOrderSpec, TelegramTradingBot, TrailingBuySpec, TrailingSellSpec
 
 
 class FakeExchangeClient:
@@ -184,6 +184,174 @@ def test_auto_oco_with_trailing_sl_end_to_end(tmp_path):
     assert statuses[1] == "cancelled"
 
     conn.close()
+    bot._storage.close()
+
+
+def test_trailing_sell_renews_next_eval_at_on_each_due_tick(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    bot._exchange_client = FakeExchangeClient()
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    now_ts = 1713030000
+    expected_next = bot._next_boundary_epoch(15, now_ts)
+
+    spec = TrailingSellSpec(
+        order_id=1200,
+        symbol="BTCUSDT",
+        qty=1.0,
+        percent=1.5,
+        chat_id=999,
+        limit=None,
+        hook_symbol=None,
+        armed=True,
+        max_price=100.0,
+        arm_op=None,
+        tf_minutes=15,
+        next_eval_at=0,
+        last_eval_at=None,
+        status="active",
+    )
+    bot._trailing_sell_orders = [spec]
+    bot._storage.save_trailing_order(
+        order_id=spec.order_id,
+        chat_id=spec.chat_id,
+        side="sell",
+        symbol=spec.symbol,
+        qty=spec.qty,
+        percent=spec.percent,
+        limit_price=spec.limit,
+        hook_symbol=spec.hook_symbol,
+        armed=spec.armed,
+        max_price=spec.max_price,
+        min_price=None,
+        arm_op=spec.arm_op,
+        tf_minutes=spec.tf_minutes,
+        next_eval_at=spec.next_eval_at,
+        last_eval_at=spec.last_eval_at,
+        status=spec.status,
+    )
+
+    mock_feed.set_price(100.5)
+    bot._eval_trailing_sell(now_ts)
+
+    assert spec.status == "active"
+    assert spec.last_eval_at == now_ts
+    assert spec.next_eval_at == expected_next
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT next_eval_at, last_eval_at FROM orders WHERE order_id = ?", (spec.order_id,))
+    next_eval_at, last_eval_at = cur.fetchone()
+    assert next_eval_at == expected_next
+    assert last_eval_at == now_ts
+    conn.close()
+    bot._storage.close()
+
+
+def test_simple_orders_sync_next_eval_for_buy_and_sell(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    bot._exchange_client = FakeExchangeClient()
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    buy_spec = SimpleOrderSpec(
+        order_id=1301,
+        side="buy",
+        symbol="BTCUSDT",
+        op="<",
+        trigger=50.0,
+        qty=0.1,
+        chat_id=999,
+        tf_minutes=15,
+        status="active",
+    )
+    bot._attach_simple_to_engine(buy_spec)
+    bot._buy_orders.append(buy_spec)
+    bot._storage.save_simple_order(
+        order_id=buy_spec.order_id,
+        chat_id=buy_spec.chat_id,
+        side=buy_spec.side,
+        symbol=buy_spec.symbol,
+        op=buy_spec.op,
+        trigger_value=buy_spec.trigger,
+        qty=buy_spec.qty,
+        hook_symbol=buy_spec.hook_symbol,
+        core_order_id=buy_spec.core_order_id,
+        tf_minutes=buy_spec.tf_minutes,
+        next_eval_at=buy_spec.next_eval_at,
+        last_eval_at=buy_spec.last_eval_at,
+        status=buy_spec.status,
+    )
+
+    sell_spec = SimpleOrderSpec(
+        order_id=1302,
+        side="sell",
+        symbol="BTCUSDT",
+        op=">",
+        trigger=150.0,
+        qty=0.1,
+        chat_id=999,
+        tf_minutes=15,
+        status="active",
+    )
+    bot._attach_simple_to_engine(sell_spec)
+    bot._sell_orders.append(sell_spec)
+    bot._storage.save_simple_order(
+        order_id=sell_spec.order_id,
+        chat_id=sell_spec.chat_id,
+        side=sell_spec.side,
+        symbol=sell_spec.symbol,
+        op=sell_spec.op,
+        trigger_value=sell_spec.trigger,
+        qty=sell_spec.qty,
+        hook_symbol=sell_spec.hook_symbol,
+        core_order_id=sell_spec.core_order_id,
+        tf_minutes=sell_spec.tf_minutes,
+        next_eval_at=sell_spec.next_eval_at,
+        last_eval_at=sell_spec.last_eval_at,
+        status=sell_spec.status,
+    )
+
+    # Force both core orders to be due and evaluate without firing triggers.
+    for core_id in (buy_spec.core_order_id, sell_spec.core_order_id):
+        core_order = bot._manager.get_order(int(core_id))
+        assert core_order is not None
+        core_order.next_eval_at = 0
+
+    bot._manager.process_price("BTCUSDT", 100.0, tf_minutes=15)
+    bot._sync_simple_order_schedule()
+
+    for spec in (buy_spec, sell_spec):
+        assert spec.last_eval_at is not None
+        assert spec.next_eval_at is not None
+        assert spec.next_eval_at > spec.last_eval_at
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT next_eval_at, last_eval_at FROM orders WHERE order_id = ?", (buy_spec.order_id,))
+    buy_next, buy_last = cur.fetchone()
+    cur.execute("SELECT next_eval_at, last_eval_at FROM orders WHERE order_id = ?", (sell_spec.order_id,))
+    sell_next, sell_last = cur.fetchone()
+    conn.close()
+
+    assert buy_next == buy_spec.next_eval_at
+    assert buy_last == buy_spec.last_eval_at
+    assert sell_next == sell_spec.next_eval_at
+    assert sell_last == sell_spec.last_eval_at
+
     bot._storage.close()
 
 

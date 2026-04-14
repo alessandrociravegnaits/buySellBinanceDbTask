@@ -3921,6 +3921,7 @@ class TelegramTradingBot:
             if not self._is_due(spec, now_ts):
                 continue
             price = self._feed.get_price(spec.symbol, spec.tf_minutes)
+            self._mark_evaluated(spec, now_ts)
             if not spec.armed and spec.limit is not None:
                 if (spec.arm_op == "<" and price < spec.limit) or (spec.arm_op == ">" and price > spec.limit):
                     spec.armed = True

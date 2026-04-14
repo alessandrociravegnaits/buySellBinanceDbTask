@@ -16,3 +16,9 @@
 
 - 2026-04-12: Estesa copertura test su parser/wizard e integrazione side-aware BTC drop.
 	- Evidenza: `PYTHONPATH=. pytest -q` => `54 passed, 4 warnings`.
+
+- 2026-04-13: Aggiunta ricostruzione storico `gain%` da `event_log` e visualizzazione nella cronologia ordini.
+	- Motivo: rendere visibile il profitto storico senza migrazione schema.
+
+- 2026-04-14: Corretto update di `next_eval_at` per trailing sell e verificata la coerenza dei flussi simple buy/sell.
+	- Evidenza: `PYTHONPATH=. pytest -q` => `58 passed, 4 warnings`.
