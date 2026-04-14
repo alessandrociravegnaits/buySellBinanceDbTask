@@ -11,7 +11,7 @@ Quando citi, indica la sorgente come: [Titolo] chunk N/M.
 - Strategia iterativa: inizia con pochi chunk, valuta la risposta e aumenta se necessario.
 
 ---
---- [1] 05-sessione-corrente.md (2026-04-11) | chunk 1/6 | score=1.2207
+--- [1] 05-sessione-corrente.md (2026-04-12) | chunk 1/7 | score=1.2207
 SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
 
 # ==================================================================================
@@ -110,7 +110,32 @@ SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
 # - `telegram_bot.py`: UI Telegram, parsing comandi, wizard, dispatch post-fill action.
 # - `core.py`: ma
 
---- [4] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 3/28 | score=1.4443
+--- [4] session-summary-2026-04-13.md (2026-04-13) | chunk 2/3 | score=1.4288
+SOURCE_ID: c29c978d62f6b649341bcc67adb485c7
+
+ale che introduce la feature: `938ca10` "FEAT: aggiunta gain nello storico ordini" (2026-04-13).
+- Sul DB locale (`data/bot.sqlite3`) non sono presenti eventi di fill con `price` nei payload, quindi il campo `entry_price`/`exit_price` non è visibile nelle attuali righe storiche (il bot mostra `N/A`).
+- Se usi un DB diverso (es. server/VPS), esegui le query in DBHub o con `sqlite3` per verificare i fill.
+
+## Comandi utili (verifica DB)
+- Mostra fill:
+  SELECT order_id, event_type, json_extract(payload_json,'$.price') AS price, created_at
+  FROM event_log
+  WHERE event_type IN ('simple_filled','function_filled','trailing_sell_filled','oco_leg_filled')
+  ORDER BY order_id, created_at;
+
+- Ricostruzione entry/exit + gain (mostra solo ordini con entry+exit):
+  WITH fills AS (
+    SELECT order_id, created_at, json_extract(payload_json,'$.price') AS price
+    FROM event_log
+    WHERE json_extract(payload_json,'$.price') IS NOT NULL
+  ),
+  first_last AS (
+    SELECT order_id,
+           (SELECT price FROM fills f2 WHERE f2.order_id = f1.order_id ORDER BY created_at ASC LIMIT 1) AS entry_price,
+           (SELECT price FROM fills f2 WHERE f2.order_id = f1.order_id ORDER BY created_at DESC LI
+
+--- [5] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 3/28 | score=1.4443
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 15806b18068cc69d0bab61
@@ -145,7 +170,7 @@ SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 # ## Scopo
 # Trading rules engine controllato via Telegram, con persistenza SQLite, feed pre
 
---- [5] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 8/28 | score=1.4518
+--- [6] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 8/28 | score=1.4518
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 core associato (`core_order_id`).
@@ -182,7 +207,7 @@ Allineamento boundary UTC.
 
 --- [7] 99-inizioSes
 
---- [6] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 1/28 | score=1.5348
+--- [7] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 1/28 | score=1.5348
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 # Contesto recuperato per progetto: buySellBinanceDbTask
@@ -214,7 +239,31 @@ SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
 # 2. `run()` avvia poller e applicazione Telegram.
 #
 
---- [7] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 14/28 | score=1.5685
+--- [8] 07-documentazione-gain-next.md (2026-04-14) | chunk 1/2 | score=1.5656
+SOURCE_ID: ff567f91e67d9abcd07349ef99465dd1
+
+# Gain storico e sync `next`
+
+## Obiettivo
+Allineare la documentazione con le ultime modifiche implementate: visualizzazione del `gain%` nella cronologia ordini e aggiornamento coerente del campo `next` per i flussi schedulati, in particolare trailing sell.
+
+## Cosa è stato implementato
+- `storage.py` ricostruisce `entry_price` e `exit_price` dai fill registrati in `event_log` e calcola `gain_pct`.
+- `telegram_bot.py` mostra nella cronologia ordini il `gain%` quando i dati sono disponibili.
+- `telegram_bot.py` aggiorna `next_eval_at` anche per il trailing sell a ogni tick dovuto.
+- `simple buy/sell` già seguivano la logica corretta di scheduling tramite `core.py` e la sync in memoria/DB.
+
+## Verifiche svolte
+- Aggiunta regressione per trailing sell: il `next` avanza e viene salvato nel DB.
+- Aggiunta regressione per simple buy/sell: il `next` resta sincronizzato con il core engine.
+- Suite completa eseguita con successo: `58 passed, 4 warnings`.
+
+## Dove guardare nel codice
+- `storage.py`: helper `get_order_gain_summary()` e lettura eventi storici.
+- `telegram_bot.py`: `_cmd_history_orders`, `_eval_trailing_sell`, `_sync_simple_order_schedule`, `_mark_evaluated`.
+- `core.py`: sched
+
+--- [9] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 14/28 | score=1.5685
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 .
@@ -258,7 +307,7 @@ Modalita supportate:
 - Al fill di una leg: ordine OCO viene finalizzato e sibling cancellato (cancel-sibling).
 - Le leg trailing possono essere coll
 
---- [8] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 24/28 | score=1.5770
+--- [10] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 24/28 | score=1.5770
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 CE_ID: 36cbc5916c15806b18068cc69d0bab61
@@ -296,7 +345,7 @@ Rendere trasferibile il contesto di lavoro tra sessioni/macchine senza perdere d
 ## Flusso sintetico
 1. Prima di chiudere: test, aggiornamento handoff corrente, update decisi
 
---- [9] 05-sessione-corrente.md (2026-04-11) | chunk 2/6 | score=1.5811
+--- [11] 05-sessione-corrente.md (2026-04-12) | chunk 2/7 | score=1.5811
 SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
 
 e presente post-fill action, viene creato OCO figlio.
@@ -334,7 +383,7 @@ e presente post-fill action, viene creato OCO figlio.
 # - Al fill di una leg: ordine OCO viene finalizzato e sibling cancellato (cancel-sibling).
 # - Le leg trailin
 
---- [10] 01-architettura-runtime.md (2026-04-11) | chunk 1/1 | score=1.5833
+--- [12] 01-architettura-runtime.md (2026-04-11) | chunk 1/1 | score=1.5833
 SOURCE_ID: 778f8617402fdd0d0db791c28961564d
 
 # Architettura e Runtime
@@ -366,7 +415,29 @@ Allineamento boundary UTC.
 
 Fonti: `ARCHITECTURE.md`, `README.md`, `docs/HANDOFF.md`
 
---- [11] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 12/28 | score=1.6085
+--- [13] session-summary-2026-04-13.md (2026-04-13) | chunk 1/3 | score=1.5995
+SOURCE_ID: c29c978d62f6b649341bcc67adb485c7
+
+# Riassunto sessione — 2026-04-13
+
+## Preferenze utente
+- Salva sempre i riassunti di sessione suddivisi per argomento in `.copilot-memory/` nella root del progetto, in formato MD.
+
+## Feature: visualizzazione `gain%` nella cronologia ordini
+- Cosa: aggiunta ricostruzione `entry_price` / `exit_price` e calcolo `gain_pct` dalla tabella `event_log`.
+- Dove: implementazione principale in `storage.py` (`get_order_gain_summary()`), rendering in `telegram_bot.py` (cronologia ordini).
+- Logica: ricerca eventi di tipo fill (estrazione `price` da `payload_json`), prima occorrenza = entry, ultima = exit; calcolo `% = (exit-entry)/entry*100`.
+- Comportamento quando mancano dati: mostra `N/A` invece di un valore errato.
+
+## Test e validazione
+- Test aggiunti in `tests/` per coprire il calcolo del gain e la visualizzazione nella cronologia.
+- Eseguiti test locali: test mirati e suite completa (se disponibili) — verificare `pytest -q` prima del deploy.
+
+## Stato attuale e note operative
+- Commit locale che introduce la feature: `938ca10` "FEAT: aggiunta gain nello storico ordini" (2026-04-13).
+- Sul DB locale (`data/bot.sqlite3`) non sono presenti eventi di fill con `price` nei payload, quindi i
+
+--- [14] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 12/28 | score=1.6085
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 controllato via Telegram, con persistenza SQLite, feed prezzi Binance e supporto OCO/trailing.
@@ -400,7 +471,63 @@ SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 Tick periodico valuta ordini
 
---- [12] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 15/28 | score=1.6704
+--- [15] 05-sessione-corrente.md (2026-04-12) | chunk 7/7 | score=1.6213
+SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
+
+ch: `featureFinale00`
+- HEAD: `a0e26e0`
+
+### Documentazione aggiornata
+- `README.md`
+- `ARCHITECTURE.md`
+- `docs/HANDOFF.md`
+- `docs/ai/AI_HANDOFF_CURRENT.md`
+- `docs/ai/AI_DECISIONS_LOG.md`
+- `docs/ai/AI_PASS1_LAST_RUN.md`
+
+--- [16] 05-sessione-corrente.md (2026-04-12) | chunk 6/7 | score=1.6290
+SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
+
+tilizzabile.
+- Struttura `.copilot-memory/` creata e pronta per riassunti futuri.
+
+## Follow-up suggeriti
+- Eseguire test completi (`python -m pytest -q`).
+- Commit delle modifiche con identita git corretta (`user.email`).
+- Aggiornare questo file a fine prossime sessioni.
+
+## Sessione Corrente - 2026-04-12
+
+### Obiettivo sessione
+- Verifica presenza logica storica su branch `featuresV1.0.0`.
+- Porting sicuro su branch attuale con estensione BUY-side.
+- Aggiornamento completo documentazione handoff.
+
+### Implementazione completata
+- BTC Drop Protection side-aware su runtime:
+	- SELL flagged => liquidazione market.
+	- BUY flagged => cancellazione preventiva.
+- Comando `/ad PERCENT` con persistenza setting.
+- Parser/wizard aggiornati per flag `btc_alert_liquidate`.
+- Storage aggiornato con colonna `orders.btc_alert_liquidate` + migrazione.
+
+### Test eseguiti
+- Targeted test e full suite.
+- Validazione finale: `PYTHONPATH=. pytest -q` => `54 passed, 4 warnings`.
+
+### Checkpoint git
+- Branch: `featureFinale00`
+- HEAD: `a0e26e0`
+
+### Documentazione aggiornata
+- `README.md`
+- `ARCHITECTURE.md`
+- `docs/HANDOFF.md`
+- `docs/ai/AI_HANDOFF_CURRENT.md`
+- `docs/ai/AI_DECISIONS_LOG.md`
+- `docs/a
+
+--- [17] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 15/28 | score=1.6704
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 - Per ogni leg viene creato un ordine core associato (`core_order_id`).
@@ -431,7 +558,26 @@ SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
 Allineamento boundary U
 
---- [13] 02-dati-storage-oco.md (2026-04-11) | chunk 1/1 | score=1.6971
+--- [18] session-summary-2026-04-13.md (2026-04-13) | chunk 3/3 | score=1.6811
+SOURCE_ID: c29c978d62f6b649341bcc67adb485c7
+
+price FROM fills f2 WHERE f2.order_id = f1.order_id ORDER BY created_at ASC LIMIT 1) AS entry_price,
+           (SELECT price FROM fills f2 WHERE f2.order_id = f1.order_id ORDER BY created_at DESC LIMIT 1) AS exit_price
+    FROM fills f1
+    GROUP BY order_id
+  )
+  SELECT order_id, entry_price, exit_price, ROUND((exit_price - entry_price)/entry_price*100,4) AS gain_pct
+  FROM first_last
+  WHERE entry_price IS NOT NULL AND exit_price IS NOT NULL;
+
+## Prossimi passi suggeriti
+- Se vuoi, controllo il DB sul server/VPS dove girano i dati reali per confermare la presenza di fill e verificare l'output della cronologia.
+- Oppure procedo a preparare il branch remoto e il breve script di deploy se vuoi pubblicare questa feature.
+
+---
+Salvato automaticamente in `.copilot-memory/session-summary-2026-04-13.md`. Se vuoi che divida i riassunti in file separati per argomento, lo organizzo così su tua indicazione.
+
+--- [19] 02-dati-storage-oco.md (2026-04-12) | chunk 1/2 | score=1.6971
 SOURCE_ID: 256f4518752ce96d17b3078a3424be16
 
 # Dati, Storage, OCO
@@ -461,7 +607,17 @@ Routine mensile sposta ordini chiusi in `data/archive`.
 
 Fonti: `ARCHITECTURE.md`, `progettoOCO.md`, `docs/HANDOFF.md`
 
---- [14] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 11/28 | score=1.7027
+## Aggiornamento 2026-04-12 - BTC Drop Protection
+
+### Nuovo campo comune ordini
+- Aggiunta colonna `orders.btc_alert_liquidate` (migrazione additiva).
+- Campo propagato su salvataggio/caricamento ordini attivi e storico.
+- Inclusa compatibilita' archivio mensile con nuovo attributo.
+
+### Semantica side-aware
+- Ordini
+
+--- [20] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 11/28 | score=1.7027
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 cs/HANDOFF.md`
@@ -499,7 +655,7 @@ Trading rules engine controllato via Telegram, con persistenza SQLite, feed prez
 ## Componenti principali
 - `telegram_bot.py`: UI Telegram, parsing comandi, wizard, dispatch post-fill
 
---- [15] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 2/28 | score=1.7169
+--- [21] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 2/28 | score=1.7169
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 `storage.py`: persistence SQLite, stato ordini, archivio mensile.
@@ -535,7 +691,37 @@ SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 USARE QUESTO BLOCCO COME FONTE PRIMARIA: se ci sono conflitti, privilegiare le informazioni qui riportate.
 Quando citi
 
---- [16] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 23/28 | score=1.7221
+--- [22] 00-fonti-md.md (2026-04-14) | chunk 1/1 | score=1.7183
+SOURCE_ID: 351e83fe7a0f6c5ca9b181a3b50ffd0b
+
+# Inventario Fonti Markdown
+
+## Root
+- `ARCHITECTURE.md`: architettura runtime, OCO post-fill, schema e flussi.
+- `README.md`: setup, avvio, comandi base.
+- `.copilot-memory/06-ordinepulito-acquistopulito.md`: riassunto tematico su ordinepulito/acquistopulito.
+- `.copilot-memory/07-documentazione-gain-next.md`: riassunto tematico su gain storico, trailing next e documentazione aggiornata.
+- `progettoOCO.md`: specifica OCO e post_fill_action.
+- `python_telegram_bot_summary.md`: note libreria telegram bot.
+- `ISTRUZIONI_persistenza_contesto_cambio_macchina.md`: handoff tra macchine.
+- `PROMPTdiRineallineamento.md`: prompt di riallineamento contesto.
+
+## Docs
+- `docs/HANDOFF.md`: runbook e stato passaggio consegne.
+
+## Docs AI
+- `docs/ai/AI_HANDOFF_CURRENT.md`
+- `docs/ai/AI_DECISIONS_LOG.md`
+- `docs/ai/AI_MIGRATION_COMMAND.md`
+- `docs/ai/AI_MIGRATION_PASS1_RUNBOOK.md`
+- `docs/ai/AI_END_SESSION_CHECKLIST.md`
+- `docs/ai/AI_BOOTSTRAP_PROMPT_TEMPLATE.md`
+- `docs/ai/AI_HANDOFF_TEMPLATE.md`
+- `docs/ai/AI_PASS1_LAST_RUN.md`
+
+Aggiornato: 2026-04-14
+
+--- [23] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 23/28 | score=1.7221
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 rezzi Binance e supporto OCO/trailing.
@@ -573,7 +759,7 @@ ion.
 # - `price_feeds.py`: feed mock e feed Binance su candele chiuse.
 # - `storage.py
 
---- [17] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 25/28 | score=1.7257
+--- [24] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 25/28 | score=1.7257
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 ION_PASS1_RUNBOOK.md`
@@ -612,7 +798,7 @@ S_LOG.md`
 - Sistemare uso ambiente Python (`venv`) e terminale.
 - Impostare preferenza memoria per ria
 
---- [18] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 19/28 | score=1.7449
+--- [25] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 19/28 | score=1.7449
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 down
@@ -662,7 +848,24 @@ pip install -r requirements.txt
 ## Avvio
 ```powershel
 
---- [19] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 17/28 | score=1.7492
+--- [26] 07-documentazione-gain-next.md (2026-04-14) | chunk 2/2 | score=1.7466
+SOURCE_ID: ff567f91e67d9abcd07349ef99465dd1
+
+py`: helper `get_order_gain_summary()` e lettura eventi storici.
+- `telegram_bot.py`: `_cmd_history_orders`, `_eval_trailing_sell`, `_sync_simple_order_schedule`, `_mark_evaluated`.
+- `core.py`: scheduling di base degli ordini nel motore runtime.
+
+## Nota operativa
+- Se in `event_log` non esistono fill con `price`, la cronologia mostrerà `N/A` per il gain.
+- Per gli ordini attivi, la vista `next` si basa sul TF configurato e sugli aggiornamenti runtime/sync persistiti.
+
+## Collegamenti utili
+- `README.md`
+- `docs/HANDOFF.md`
+- `docs/ai/AI_HANDOFF_CURRENT.md`
+- `docs/ai/AI_DECISIONS_LOG.md`
+
+--- [27] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 17/28 | score=1.7492
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 in `.copilot-memory/`, in formato MD e suddivisi per argomento.
@@ -700,7 +903,7 @@ Questa cartella contiene riassunti di sessione e note operative in formato Markd
 ## Convenzione
 - Un file per ar
 
---- [20] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 16/28 | score=1.7526
+--- [28] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 16/28 | score=1.7526
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 r, esecuzione su exchange + eventi + notifiche.
@@ -739,7 +942,7 @@ oni-run.md`: bootstrap, run, test, comandi utili.
 # ## Root
 # - `ARCHITECTURE.md
 
---- [21] 05-sessione-corrente.md (2026-04-11) | chunk 4/6 | score=1.7632
+--- [29] 05-sessione-corrente.md (2026-04-12) | chunk 4/7 | score=1.7632
 SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
 
 zioni-run.md`: bootstrap, run, test, comandi utili.
@@ -772,36 +975,22 @@ zioni-run.md`: bootstrap, run, test, comandi utili.
 # - `docs/ai/AI_BOOTSTRAP_PROMPT_TEMPLATE.md`
 # - `docs/ai/AI_HA
 
---- [22] 00-fonti-md.md (2026-04-11) | chunk 1/1 | score=1.7782
-SOURCE_ID: 351e83fe7a0f6c5ca9b181a3b50ffd0b
+--- [30] 02-dati-storage-oco.md (2026-04-12) | chunk 2/2 | score=1.7760
+SOURCE_ID: 256f4518752ce96d17b3078a3424be16
 
-# Inventario Fonti Markdown
+quidate` (migrazione additiva).
+- Campo propagato su salvataggio/caricamento ordini attivi e storico.
+- Inclusa compatibilita' archivio mensile con nuovo attributo.
 
-## Root
-- `ARCHITECTURE.md`: architettura runtime, OCO post-fill, schema e flussi.
-- `README.md`: setup, avvio, comandi base.
-- `.copilot-memory/06-ordinepulito-acquistopulito.md`: riassunto tematico su ordinepulito/acquistopulito.
-- `progettoOCO.md`: specifica OCO e post_fill_action.
-- `python_telegram_bot_summary.md`: note libreria telegram bot.
-- `ISTRUZIONI_persistenza_contesto_cambio_macchina.md`: handoff tra macchine.
-- `PROMPTdiRineallineamento.md`: prompt di riallineamento contesto.
+### Semantica side-aware
+- Ordini SELL con `btc_alert_liquidate=true`: liquidazione market su drop BTC oltre soglia.
+- Ordini BUY con `btc_alert_liquidate=true`: cancellazione preventiva su drop BTC oltre soglia.
 
-## Docs
-- `docs/HANDOFF.md`: runbook e stato passaggio consegne.
+### Config globale soglia
+- Setting persistito: `btc_liquidation_drop_percent`.
+- Gestito via comando runtime `/ad PERCENT` (`/ad 0` disabilita).
 
-## Docs AI
-- `docs/ai/AI_HANDOFF_CURRENT.md`
-- `docs/ai/AI_DECISIONS_LOG.md`
-- `docs/ai/AI_MIGRATION_COMMAND.md`
-- `docs/ai/AI_MIGRATION_PASS1_RUNBOOK.md`
-- `docs/ai/AI_END_SESSION_CHECKLIST.md`
-- `docs/ai/AI_BOOTSTRAP_PROMPT_TEMPLATE.md`
-- `docs/ai/AI_HANDOFF_TEMPLATE.md`
-- `docs/ai/AI_PASS1_LAST_RUN.md`
-
-Aggiornato: 2026-04-11
-
---- [23] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 20/28 | score=1.7821
+--- [31] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 20/28 | score=1.7821
 SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
 
 pts\Activate.ps1
@@ -853,18 +1042,7 @@ SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
 # 
 # --- [3] README.md (2026-04-06) | chunk 1/1 | score=1.7924 --
 
---- [24] 05-sessione-corrente.md (2026-04-11) | chunk 6/6 | score=1.7893
-SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
-
-tilizzabile.
-- Struttura `.copilot-memory/` creata e pronta per riassunti futuri.
-
-## Follow-up suggeriti
-- Eseguire test completi (`python -m pytest -q`).
-- Commit delle modifiche con identita git corretta (`user.email`).
-- Aggiornare questo file a fine prossime sessioni.
-
---- [25] README.md (2026-04-11) | chunk 1/1 | score=1.7924
+--- [32] README.md (2026-04-14) | chunk 1/1 | score=1.7924
 SOURCE_ID: 6d931e6cfa16e29a8e8d9111edb922a5
 
 # Copilot Memory (Project)
@@ -884,6 +1062,603 @@ Questa cartella contiene riassunti di sessione e note operative in formato Markd
 - `04-ai-handoff-migrazione.md`: processo AI/handoff e passaggio macchina.
 - `05-sessione-corrente.md`: riassunto attività recenti.
 - `06-ordinepulito-acquistopulito.md`: configurazione globale clean-entry e gating buy/OCO.
+- `07-documentazione-gain-next.md`: aggiornamento docs su gain storico e sync `next` trailing.
 
 ## Nota preferenza utente
 I riassunti di sessione vanno sempre salvati qui in `.copilot-memory/`, in formato MD e suddivisi per argomento.
+
+--- [33] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 22/28 | score=1.7969
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+0/11 | score=1.8360
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+i + notifiche.
+5. Se presente post-fill action, viene creato OCO figlio.
+
+## Timeframe
+Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
+Allineamento boundary UTC.
+
+## Rischi principali
+- Rate limit/transient error Binance.
+- Necessità di mantenere valutazione ordini sequenziale.
+- Coerenza prezzo candle chiusa nel feed.
+
+Fonti: `ARCHITECTURE.md`, `README.md`, `docs/HANDOFF.md`
+
+--- [8] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 5/6 | score=1.6353
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+CO
+# - Per ogni leg viene creato un ordine core associato (`core_order_id`).
+# - Al fill di una leg: ordine OCO viene finalizzato e sibling cancellato (cancel-sibling).
+# - Le leg trailing
+
+--- [4] 01-architettura-runtime.md (2026-04-06) | chunk 1/1 | score=1.5833
+SOURCE_ID: 778f8617402fdd0d0db791c28961564d
+
+# Architettura e Runtime
+
+## Scopo
+Trading rules engine controllato via Telegram, con persistenza SQLite, feed prezzi Binance e supporto OCO/trailing.
+
+## Componenti principali
+- `telegram_bot.py`: UI Telegram, parsing comandi, wizard, dispatch post-fill action.
+- `core.py`: manager ordini, trigger/action, poll
+
+--- [34] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 18/28 | score=1.8003
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+6cfa16e29a8e8d9111edb922a5
+
+# Copilot Memory (Project)
+
+Questa cartella contiene riassunti di sessione e note operative in formato Markdown, organizzati per argomento.
+
+## Convenzione
+- Un file per argomento.
+- Contenuto sintetico, operativo, aggiornabile.
+- Fonti sempre riportate nel file `00-fonti-md.md`.
+
+## File correnti
+- `00-fonti-md.md`: inventario dei file Markdown del progetto.
+- `01-architettura-runtime.md`: panoramica componenti e ciclo runtime.
+- `02-dati-storage-oco.md`: modello dati, OCO, persistenza.
+- `03-operazioni-run.md`: bootstrap, run, test, comandi utili.
+- `04-ai-handoff-migrazione.md`: processo AI/handoff e passaggio macchina.
+- `05-sessione-corrente.md`: riassunto attività recenti.
+
+## Nota preferenza utente
+Da questa sessione in poi, i riassunti verranno salvati qui in `.copilot-memory/`, in formato MD e suddivisi per argomento.
+
+--- [16] 00-fonti-md.md (2026-04-06) | chunk 1/1 | score=1.7943
+SOURCE_ID: 351e83fe7a0f6c5ca9b181a3b50ffd0b
+
+# Inventario Fonti Markdown
+
+## Root
+- `ARCHITECTURE.md`: architettura runtime, OCO post-fill, schema e flussi.
+- `README.md`: setup, avvio, comandi base.
+- `progettoOCO.md`: specifica OCO e post_fill_action.
+- `python_tele
+
+--- [35] 05-sessione-corrente.md (2026-04-12) | chunk 3/7 | score=1.8011
+SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
+
+# ## Logica OCO
+# - Per ogni leg viene creato un ordine core associato (`core_order_id`).
+# - Al fill di una leg: ordine OCO viene finalizzato e sibling cancellato (cancel-sibling).
+# - Le leg trailing possono essere collegate a ordini trailing runtime.
+# 
+# ## Archiviazione
+# Routine mensile sposta ordini chiusi in `data/archive`.
+# 
+# Fonti: `ARCHITECTURE.md`, `progettoOCO.md`, `docs/HANDOFF.md`
+# 
+# --- [3] README.md (2026-04-06) | chunk 1/1 | score=1.7924 ---
+# # Copilot Memory (Project)
+# 
+# Questa cartella contiene riassunti di sessione e note operative in formato Markdown, organizzati per argomento.
+# 
+# ## Convenzione
+# - Un file per argomento.
+# - Contenuto sintetico, operativo, aggiornabile.
+# - Fonti sempre riportate nel file `00-fonti-md.md`.
+# 
+# ## File correnti
+# - `00-fonti-md.md`: inventario dei file Markdown del progetto.
+# - `01-architettura-runtime.md`: panoramica componenti e ciclo runtime.
+# - `02-dati-storage-oco.md`: modello dati, OCO, persistenza.
+# - `03-operazioni-run.md`: bootstrap, run, test, comandi utili.
+# - `04-ai-handoff-migrazione.md`: processo AI/handoff e passaggio macchina.
+# - `05-sessione-corrente.md`: riassunto attività recenti.
+# 
+# ## Nota
+
+--- [36] 03-operazioni-run.md (2026-04-12) | chunk 1/1 | score=1.8045
+SOURCE_ID: 59f896109453534dc21b092b60b2576e
+
+# Operazioni, Avvio, Test
+
+## Setup locale
+```powershell
+python -m venv venv
+. .\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+## Variabili env principali
+- `BOT_TOKEN`
+- `AUTHORIZED_CHAT_ID`
+- `BINANCE_API_KEY`
+- `BINANCE_SECRET_KEY`
+- `BOT_DB_PATH`
+
+## Avvio
+```powershell
+python main.py
+```
+
+## Test
+```powershell
+python -m pytest -q
+```
+
+## Nota Windows PowerShell
+Se l'attivazione `Activate.ps1` e bloccata da execution policy:
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+. .\venv\Scripts\Activate.ps1
+```
+
+## Terminale Bash classico
+- Git Bash: `"C:\Program Files\Git\bin\bash.exe"`
+- WSL Bash: `wsl -e bash`
+
+Fonti: `README.md`, `docs/HANDOFF.md`
+
+## Aggiornamento 2026-04-12
+
+### Comando validazione usato nel checkpoint
+```powershell
+PYTHONPATH=. pytest -q
+```
+
+### Esito checkpoint
+- `54 passed, 4 warnings`
+- Branch: `featureFinale00`
+- HEAD: `a0e26e0`
+
+### Note operative
+- Nuovo comando runtime: `/ad PERCENT` per soglia BTC drop.
+- `PERCENT=0` disabilita la protezione.
+
+--- [37] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 7/28 | score=1.8101
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+nce SQLite, stato ordini, archivio mensile.
+# 
+# ## Flusso runtime
+# 1. `build_bot_from_env()` legge env e costruisce il bot.
+# 2. `run()` avvia poller e applicazione Telegram.
+# 3. Tick periodico valuta ordini con scheduling TF (`next_eval_at`).
+# 4. In caso di trigger, esecuzione su exchange + eventi + notifiche.
+# 5. Se presente post-fill action, viene creato OCO figlio.
+# 
+# ## Timeframe
+# Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
+# Allineamento boundary UTC.
+# 
+# ## Rischi principali
+# - Rate limit
+
+--- [3] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 3/6 | score=1.5145
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+ersistenza SQLite, feed prezzi Binance e supporto OCO/trailing.
+# 
+# ## Componenti principali
+# - `telegram_bot.py`: UI Telegram, parsing comandi, wizard, dispatch post-fill action.
+# - `core.py`: manage
+
+--- [6] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 9/11 | score=1.5224
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+ene creato un ordine core associato (`core_order_id`).
+# - Al fill di una leg: ordine OCO viene finalizzato e sibling cancellato (cancel-sibling).
+# - Le leg trailing
+
+--- [7] 01-architettura-runtime.md (2026-04-06) | chu
+
+--- [38] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 13/28 | score=1.8145
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+ITECTURE.md`, `README.md`, `docs/HANDOFF.md`
+
+--- [10] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 7/11 | score=1.6064
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+Tick periodico valuta ordini con scheduling TF (`next_eval_at`).
+# 4. In caso di trigger, esecuzione su exchange + eventi + notifiche.
+# 5. Se presente post-fill action, viene creato OCO figlio.
+# 
+#
+
+--- [2] 05-sessione-corrente.md (2026-04-06) | chunk 1/6 | score=1.2207
+SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
+
+# ==================================================================================
+# [Contesto sessioni precedenti - progetto: buySellBinanceDbTask]
+# 
+# --- [1] 01-architettura-runtime.md (2026-04-06) | chunk 1/1 | score=1.5833 ---
+# # Architettura e Runtime
+# 
+# ## Scopo
+# Trading rules engine controllato via Telegram, con persistenza SQLite, feed prezzi Binance e supporto OCO/trailing.
+# 
+# ## Componenti principali
+# - `telegram_bot.py`: UI Telegram, parsing comandi, wizard, dispatch post-fill action.
+# - `core.py`: man
+
+--- [6] 05-sessione-corrente.md (2026-04-06) | chunk 2/6 | score=1.5762
+SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
+
+e presente post-fill action, viene creato OCO figlio.
+# 
+# ##
+
+--- [39] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 21/28 | score=1.8221
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+iviazione
+# Routine mensile sposta ordini chiusi in `data/archive`.
+# 
+# Fonti: `ARCHITECTURE.md`, `progettoOCO.md`, `docs/HANDOFF.md`
+# 
+# --- [3] README.md (2026-04-06) | chunk 1/1 | score=1.7924 ---
+# # Copilot Memory (Project)
+# 
+# Questa cartella contiene riassunti di sessione e note operative in formato Markdown, organizzati per argomento.
+# 
+# ## Convenzione
+# - Un file per argomento.
+# - Contenuto sintetico, operativo, aggiornabile.
+# - Fonti sempre riportate nel file `00-fonti-md.md`.
+# 
+# ## File correnti
+# - `00-fonti-md.md`: inventario dei file Markdown del progetto.
+# - `01-architettura-runtime.md`: panoramica componenti e ciclo runtime.
+# - `02-dati-storage-oco.md`: modello dati, OCO, persistenza.
+# - `03-operazioni-run.md`: bootstrap, run, test, comandi utili.
+# - `04-ai-handoff-migrazione.md`: processo AI/handoff e passaggio macchina.
+# - `05-sessione-corrente.md`: riassunto attività recenti.
+# 
+# ## Nota p
+
+--- [19] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 10/11 | score=1.8360
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+i + notifiche.
+5. Se presente post-fill action, viene creato OCO figlio.
+
+## Timeframe
+Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440
+
+--- [40] 06-ordinepulito-acquistopulito.md (2026-04-11) | chunk 1/2 | score=1.8371
+SOURCE_ID: 7f5dd36c17dd5c16f765f4152af5d3ef
+
+# Ordinepulito / acquistopulito
+
+## Obiettivo
+Centralizzare la logica di ingresso pulito per gli ordini buy, mantenendo il comportamento legacy invariato quando il flag e la config globale non sono attivi.
+
+## Cosa è stato fatto
+- Aggiunta la classe `TechnicalIndicators` in `indicators.py` con RSI, ATR, ADX, OBV, SMA, EMA, volume MA e ATR stop.
+- Persistenza del flag `acquistopulito` su ordini simple, function, trailing buy e OCO buy in `storage.py`.
+- Propagazione del flag nel bot Telegram, nei wizard guidati e nei comandi slash.
+- Gating runtime: gli ordini buy con `acquistopulito=true` passano prima da una valutazione indicatori; se non superano i criteri, vengono rimessi in attesa al boundary successivo.
+- Supporto esteso anche a OCO buy, con blocco e riarmo della leg quando la verifica clean-entry fallisce.
+
+## Config globale setPulito
+- Introduzione di una config globale per i filtri clean-entry.
+- Modalità supportate:
+  - `Automatico`: preset `Conservativo`, `Bilanciato`, `Aggressivo`.
+  - `Manuale`: modifica puntuale di RSI minimo, ADX minimo, numero minimo di check e toggle dei filtri trend/volume/prezzo sopra EMA.
+- Comando legacy `/setpulito` e percorso GUI in `Impostazi
+
+--- [41] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 26/28 | score=1.8679
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+e Corrente - 2026-04-06
+
+## Obiettivo sessione
+- Verificare controllo accesso tramite `AUTHORIZED_CHAT_ID`.
+- Sistemare uso ambiente Python (`venv`) e terminale.
+- Impostare preferenza memoria per riassunti per argomento.
+
+## Attivita svolte
+- Controllato `.gitignore` e confermato esclusione `.env`.
+- Aggiornato `telegram_bot.py` su flusso autorizzazione/cattura chat e bootstrap env.
+- Eseguiti test mirati via `venv\\Scripts\\python.exe`.
+- Risolto problema activation PowerShell con policy process-scope.
+- Impostato workspace settings con default terminale Bash + `python.terminal.useEnvFile`.
+
+## Esito
+- Bot configurato per usare `AUTHORIZED_CHAT_ID` in avvio da env.
+- Ambiente `venv` verificato e utilizzabile.
+- Struttura `.copilot-memory/` creata e pronta per riassunti futuri.
+
+## Follow-up suggeriti
+- Eseguire test completi (`python -m pytest -q`).
+- Commit delle modifiche con identita git corr
+
+--- [23] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 5/11 | score=1.9530
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+t-fill action, viene creato OCO figlio.
+# 
+# ## Timeframe
+# Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
+# Allineamento boundary UTC.
+# 
+# ## Rischi p
+
+--- [42] 04-ai-handoff-migrazione.md (2026-04-11) | chunk 1/1 | score=1.8932
+SOURCE_ID: 4412a24ea089b5cc173294724cf23f74
+
+# AI Workflow, Handoff, Migrazione
+
+## Obiettivo
+Rendere trasferibile il contesto di lavoro tra sessioni/macchine senza perdere decisioni e stato.
+
+## File guida
+- `docs/ai/AI_HANDOFF_CURRENT.md`
+- `docs/ai/AI_DECISIONS_LOG.md`
+- `docs/ai/AI_MIGRATION_COMMAND.md`
+- `docs/ai/AI_MIGRATION_PASS1_RUNBOOK.md`
+- `docs/ai/AI_END_SESSION_CHECKLIST.md`
+- `docs/ai/AI_BOOTSTRAP_PROMPT_TEMPLATE.md`
+
+## Flusso sintetico
+1. Prima di chiudere: test, aggiornamento handoff corrente, update decision log.
+2. Passaggio macchina: clone, setup venv, env, test smoke.
+3. Nuova sessione: leggere README + ARCHITECTURE + AI_HANDOFF_CURRENT.
+
+## Rischi processo
+- Handoff non aggiornato = perdita contesto.
+- Decisioni non registrate = regressioni organizzative.
+- Ambiente non allineato = test/run non riproducibili.
+
+Fonti: `docs/ai/*.md`, `ISTRUZIONI_persistenza_contesto_cambio_macchina.md`
+
+--- [43] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 27/28 | score=1.9026
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+ID: 36cbc5916c15806b18068cc69d0bab61
+
+t-fill action, viene creato OCO figlio.
+# 
+# ## Timeframe
+# Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
+# Allineamento boundary UTC.
+# 
+# ## Rischi principali
+# - Rate limit/transient
+
+--- [4] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 4/6 | score=1.5509
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+post-fill action, viene creato OCO figlio.
+# 
+# ## Timeframe
+# Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
+# Allineamento boundary UTC.
+# 
+# ## Rischi principali
+# - Rate limit/transient error Binance.
+# - Necessità di mantenere valutazione ordini sequenziale.
+# - Coerenza prezzo candle chiusa nel feed.
+# 
+# Fonti: `ARCHITECTURE.md`, `README.md`, `docs/HANDOFF.md`
+# 
+# --- [2] 02-dati-storage-oco.md (2026-04-06) | chunk 1/1 | score=1.6971 ---
+# # Dati, Storage, OCO
+# 
+# ## Persistenza
+# Storage SQLite con schema inizializzato automaticamente all'avvio (`CREATE TABLE IF NOT EXISTS`).
+# ## Entita principali
+# - Ordini base: simple, function, trailing.
+# - OCO: `order_oco` (testata) + `order_oco_leg` (legs).
+# - Eventi: log audit di esecuzioni/fallimenti/transizioni.
+# 
+# ## Post-fill action
+# Configurazione JSON (`pos
+
+--- [44] 05-sessione-corrente.md (2026-04-12) | chunk 5/7 | score=1.9060
+SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
+
+ONS_LOG.md`
+# - `docs/ai/AI_MIGRATION_COMMAND.md`
+# - `docs/ai/AI_MIGRATION_PASS1_RUNBOOK.md`
+# - `docs/ai/AI_END_SESSION_CHECKLIST.md`
+# - `docs/ai/AI_BOOTSTRAP_PROMPT_TEMPLATE.md`
+# - `docs/ai/AI_HANDOFF_TEMPLATE.md`
+# - `docs/ai/AI_PASS1_LAST_RUN.md`
+# 
+# Aggiornato: 2026-04-06
+
+# Sessione Corrente - 2026-04-06
+
+## Obiettivo sessione
+- Verificare controllo accesso tramite `AUTHORIZED_CHAT_ID`.
+- Sistemare uso ambiente Python (`venv`) e terminale.
+- Impostare preferenza memoria per riassunti per argomento.
+
+## Attivita svolte
+- Controllato `.gitignore` e confermato esclusione `.env`.
+- Aggiornato `telegram_bot.py` su flusso autorizzazione/cattura chat e bootstrap env.
+- Eseguiti test mirati via `venv\\Scripts\\python.exe`.
+- Risolto problema activation PowerShell con policy process-scope.
+- Impostato workspace settings con default terminale Bash + `python.terminal.useEnvFile`.
+
+## Esito
+- Bot configurato per usare `AUTHORIZED_CHAT_ID` in avvio da env.
+- Ambiente `venv` verificato e utilizzabile.
+- Struttura `.copilot-memory/` creata e pronta per riassunti futuri.
+
+## Follow-up suggeriti
+- Eseguire test completi (`python -m pytest -q`).
+- Commit delle modifiche con identita git co
+
+--- [45] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 10/28 | score=1.9348
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+g` (legs).
+# - Eventi: log audit di esecuzioni/fallimenti/transizioni.
+# 
+# ## Post-fill action
+# Configurazione JSON (`post_fill_action`) su ordini di ingresso, usata per creare OCO automatico al fill.
+# Modalita supportate:
+# - `fixed`
+# - `percent`
+# - `trailing`
+# 
+# ## Logica OCO
+# - Per ogni leg viene creato un ordine core associato (`core_order_id`).
+# - Al fill di una leg: ordine OCO viene finalizzato e sibling cancellato (cancel-sibling).
+# - Le leg trailing
+
+--- [7] 01-architettura-runtime.
+
+--- [8] 05-sessione-corrente.md (2026-04-06) | chunk 2/6 | score=1.5762
+SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
+
+e presente post-fill action, viene creato OCO figlio.
+# 
+# ## Timeframe
+# Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
+# Allineamento boundary UTC.
+# 
+# ## Rischi principali
+# - Rate limit/transient error Binance.
+# - Necessità di mantenere valutazione ordini sequenziale.
+# - Coerenza prezzo candle chiusa nel feed.
+# 
+# Fonti: `ARCHITECTURE.md`, `README.md`, `docs/HANDOFF.md`
+# 
+# --- [2] 02-dati-storage-oco.md (2026-04-06) | chunk 1/1 | score=1.6971 ---
+# # Dati, Storage, OCO
+# 
+# ## Persistenza
+# Storage SQLite con schema inizializzato automaticamente all'
+
+--- [46] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 9/28 | score=1.9365
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+presente post-fill action, viene creato OCO figlio.
+
+## Timeframe
+Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
+Allineamento boundary UTC.
+
+## Rischi principali
+- Rate
+
+--- [7] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 8/11 | score=1.5688
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+e creato OCO figlio.
+# 
+# ## Timeframe
+# Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
+# Allineamento boundary UTC.
+# 
+# ## Rischi principali
+# - Rate limit/transient error Binance.
+# - Necessità di mantenere valutazione ordini sequenziale.
+# - Coerenza prezzo candle chiusa nel feed.
+# 
+# Fonti: `ARCHITECTURE.md`, `README.md`, `docs/HANDOFF.md`
+# 
+# --- [2] 02-dati-storage-oco.md (2026-04-06) | chunk 1/1 | score=1.6971 ---
+# # Dati, Storage, OCO
+# 
+# ## Persistenza
+# Storage SQLite con schema inizializzato automaticamente all'avvio (`CREATE TABLE IF NOT EXISTS`).
+# ## Entita principali
+# - Ordini base: simple, function, trailing.
+# - OCO: `order_oco` (testata) + `order_oco_leg` (legs).
+# - Eventi: log audit di esecuzioni/fallimenti/transizioni.
+# 
+# ## Post-fill action
+# Configurazione JSON (`post_fill_action`) su ordini di ingresso, usata per creare OCO automatico al fil
+
+--- [47] 06-ordinepulito-acquistopulito.md (2026-04-11) | chunk 2/2 | score=1.9490
+SOURCE_ID: 7f5dd36c17dd5c16f765f4152af5d3ef
+
+ssivo`.
+  - `Manuale`: modifica puntuale di RSI minimo, ADX minimo, numero minimo di check e toggle dei filtri trend/volume/prezzo sopra EMA.
+- Comando legacy `/setpulito` e percorso GUI in `Impostazioni -> setPulito`.
+- I valori vengono salvati in `bot_settings` e ricaricati all’avvio.
+
+## Default e compatibilità
+- Se non esiste configurazione salvata, il bot parte con il preset `Bilanciato`.
+- Il comportamento buy legacy resta identico quando `acquistopulito` è falso.
+- La configurazione è globale, non per singolo ordine.
+
+## Verifica
+- Aggiunti test per persistenza flag, parsing comandi, gating runtime e preset/override di `setPulito`.
+- Suite completa verificata con successo.
+
+--- [48] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 6/28 | score=2.0036
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+te post-fill action, viene creato OCO figlio.
+# 
+# ## Timeframe
+# Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
+# Allineamento boundary UTC.
+# 
+# ## Rischi principali
+# - Rate limit
+
+--- [3] 05-sessione-corrente.md (2026-04-06) | chunk 2/6 | score=1.5762
+SOURCE_ID: c5485500fcf5aef6495efca7bdfecba2
+
+e presente post-fill action, viene creato OCO figlio.
+# 
+# ## Timeframe
+# Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
+# Allineamento boundary UTC.
+# 
+# ## Rischi principali
+# - Rate limit/transient
+
+--
+
+--- [5] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 3/11 | score=1.5097
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+persistenza SQLite, feed prezzi Binance e supporto OCO/trailing.
+# 
+# ## Componenti principali
+# - `telegram_bot.py`: UI Telegram, parsing comandi, wizard, dispatch post-fill action.
+# - `core.py`: manager ordini, trigger/action, poller e coda esecuzione.
+# - `price_feeds.py`: feed mock e feed Binance su candele chiuse.
+# - `storage.py`: persistence SQLite, stato ordini, archivio mensile.
+# 
+# ## Flusso runtime
+# 1. `build_bot_from_env()` legge env e costruisce il bot.
+# 2. `run()` avvia poller e applicazione Telegram.
+# 3. Tick periodico val
+
+--- [49] 99-inizioSessioneVettoriale.md (2026-04-06) | chunk 28/28 | score=2.0043
+SOURCE_ID: 36cbc5916c15806b18068cc69d0bab61
+
+e: simple, function, trailing.
+# - OCO: `order_oco` (testata) + `order_oco_leg` (legs).
+# - Eventi: log audit di esecuzioni/fallimenti/transizioni.
+# 
+# ## Post-fill action
+# Configurazione JSON (`post_fill_action`) su ordini di ingresso,

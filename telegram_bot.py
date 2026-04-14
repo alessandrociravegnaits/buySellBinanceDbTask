@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
+import prevision
 from core import Action, Order, OrderBehavior, Trigger, build_engine
 from indicators import TechnicalIndicators
 from price_feeds import Binance1mClosePriceFeed
@@ -779,8 +780,9 @@ class TelegramTradingBot:
     def _main_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton("🆕 Nuovo ordine"), KeyboardButton("📋 Ordini attivi")],
-            [KeyboardButton("📜 Ordini storici"), KeyboardButton("⚙️ Impostazioni")],
-            [KeyboardButton("ℹ️ Info"), KeyboardButton("💰 Account")],
+            [KeyboardButton("📜 Ordini storici"), KeyboardButton("🔮 Prevision")],
+            [KeyboardButton("⚙️ Impostazioni"), KeyboardButton("ℹ️ Info")],
+            [KeyboardButton("💰 Account")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -1779,6 +1781,7 @@ class TelegramTradingBot:
             "/f SYMBOL <|> TRIGGER QTY PERCENT [@PAIRHOOK] [tf=MIN] - buy poi trailing sell\n"
             "/S SYMBOL PERCENT QTY [LIMIT] [@PAIRHOOK] [tf=MIN] - trailing sell\n"
             "/B SYMBOL PERCENT QTY LIMIT [tf=MIN] - trailing buy\n"
+            "/prevision SYMBOL [BUDGET] [TF] [LOOKBACK] - genera comando trailing buy\n"
             "/t MINUTI - default tf nuovi ordini (1,5,15,30,60,120,240,1440)\n"
             "/a 0|1 [PERCENT] - alert BTCUSDT\n"
             "/ad PERCENT - soglia caduta BTC per protezione ordini flaggati\n"
@@ -1852,6 +1855,14 @@ class TelegramTradingBot:
         if lowered == "ordini storici":
             self._set_ui_state(context, "history_days", {})
             await self._send(update, "Ordini storici: scegli intervallo.", reply_markup=self._orders_history_keyboard())
+            return
+        if lowered == "prevision":
+            self._set_ui_state(context, "prevision_symbol", {"kind": "prevision"})
+            await self._send(
+                update,
+                "Prevision: inserisci SYMBOL (es. XRPUSDC).\nPuoi poi aggiungere budget, timeframe e lookback.",
+                reply_markup=self._cancel_keyboard(),
+            )
             return
         if lowered == "impostazioni":
             await self._show_settings_menu(update)
@@ -1955,6 +1966,52 @@ class TelegramTradingBot:
                 draft["qty"] = float(text)
                 self._set_ui_state(context, "simple_hook_choice", draft)
                 await self._send(update, "Vuoi usare un pairhook?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "prevision_symbol":
+                symbol = text.upper()
+                draft["symbol"] = symbol
+                self._set_ui_state(context, "prevision_budget", draft)
+                await self._send(
+                    update,
+                    "Inserisci budget nel quote asset oppure scrivi skip per saltare.",
+                    reply_markup=self._cancel_keyboard(),
+                )
+                return True
+            if state == "prevision_budget":
+                if normalized in {"skip", "salta", "none", "null", "0"}:
+                    draft["budget"] = None
+                else:
+                    draft["budget"] = float(text.replace(",", "."))
+                self._set_ui_state(context, "prevision_tf", draft)
+                await self._send(update, f"Inserisci timeframe minuti oppure skip per usare {prevision.DEFAULT_TF_MINUTES}.", reply_markup=self._cancel_keyboard())
+                return True
+            if state == "prevision_tf":
+                if normalized in {"skip", "salta", "none", "null"}:
+                    draft["tf"] = prevision.DEFAULT_TF_MINUTES
+                else:
+                    draft["tf"] = int(text)
+                self._set_ui_state(context, "prevision_lookback", draft)
+                await self._send(
+                    update,
+                    f"Inserisci lookback barre oppure skip per usare {prevision.DEFAULT_LOOKBACK_BARS}.",
+                    reply_markup=self._cancel_keyboard(),
+                )
+                return True
+            if state == "prevision_lookback":
+                if normalized in {"skip", "salta", "none", "null"}:
+                    draft["lookback"] = prevision.DEFAULT_LOOKBACK_BARS
+                else:
+                    draft["lookback"] = int(text)
+
+                result = prevision.analyze_symbol(
+                    draft["symbol"],
+                    tf_minutes=int(draft.get("tf") or prevision.DEFAULT_TF_MINUTES),
+                    budget_quote=draft.get("budget"),
+                    lookback_bars=int(draft.get("lookback") or prevision.DEFAULT_LOOKBACK_BARS),
+                )
+                self._clear_ui_state(context)
+                await self._send_chunked(update, ["Prevision pronta:", *result.summary_lines, "", "Comando:", result.command])
+                await self._show_main_menu(update)
                 return True
             if state == "simple_hook_choice":
                 if normalized == "si":
@@ -2952,6 +3009,8 @@ class TelegramTradingBot:
                 await self._cmd_ad(update, parts)
             elif cmd == "/e":
                 await self._cmd_e(update, parts)
+            elif cmd == "/prevision":
+                await self._cmd_prevision(update, parts)
             elif cmd == "/setpulito":
                 await self._cmd_setpulito(update, parts)
             elif cmd == "/o":
@@ -3457,6 +3516,26 @@ class TelegramTradingBot:
         self._storage.set_setting("echo_enabled", "1" if self._echo_enabled else "0")
         self._storage.append_event("setting_updated", payload={"echo_enabled": self._echo_enabled})
         await self._send(update, f"Echo impostato a {self._echo_enabled}")
+
+    async def _cmd_prevision(self, update: Update, parts: List[str]):
+        if len(parts) < 2:
+            raise ValueError("Formato: /prevision SYMBOL [BUDGET] [TF] [LOOKBACK]")
+
+        symbol = parts[1]
+        budget: Optional[float] = None
+        tf_minutes = prevision.DEFAULT_TF_MINUTES
+        lookback = prevision.DEFAULT_LOOKBACK_BARS
+
+        if len(parts) >= 3 and parts[2].strip().lower() not in {"-", "none", "null"}:
+            budget = float(parts[2].replace(",", "."))
+        if len(parts) >= 4:
+            tf_minutes = int(parts[3])
+        if len(parts) >= 5:
+            lookback = int(parts[4])
+
+        result = prevision.analyze_symbol(symbol, tf_minutes=tf_minutes, budget_quote=budget, lookback_bars=lookback)
+        lines = ["Prevision pronta:", *result.summary_lines, "", "Comando:", result.command]
+        await self._send_chunked(update, lines)
 
     async def _cmd_setpulito(self, update: Update, parts: List[str]):
         usage = (

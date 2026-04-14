@@ -132,7 +132,7 @@ def test_history_flow_renders_results(tmp_path):
         acquistopulito=True,
         status="filled",
     )
-    _set_order_updated_at(storage, oid, (datetime.now(timezone.utc) - timedelta(days=1)).replace(microsecond=0).isoformat())
+    _set_order_updated_at(storage, oid, (datetime.now(timezone.utc) - timedelta(hours=6)).replace(microsecond=0).isoformat())
 
     captured = {"text": "", "chunks": []}
 

@@ -107,6 +107,21 @@ Buone pratiche:
 - Trailing sell: il campo `next` viene aggiornato a ogni valutazione dovuta, come già avviene per gli altri flussi schedulati.
 - Copertura test: aggiunte regressioni su gain storico, sync `next_eval_at` e comportamento trailing/OCO.
 
+## prevision.py
+Script CLI nella root del progetto per generare un comando trailing buy pronto da incollare nel bot.
+
+Esempio:
+
+```powershell
+python prevision.py XRPUSDC --budget 100 --tf 15
+```
+
+Il comando legge OHLCV pubblici Binance, calcola una fascia tecnica di pullback, stima il rimbalzo minimo e stampa il payload completo con `tf`, `btc_alert` e `oco`.
+
+Il bot Telegram espone anche il comando `/prevision`, che usa la stessa pipeline condivisa e restituisce lo stesso output direttamente in chat.
+
+Nota: se un pair non e' disponibile nei feed di ricerca finanziaria, la procedura usa il proxy piu' coerente per il quadro tecnico; nel caso discusso `XRPUSDC` e' stato approssimato con `XRP-USD`.
+
 Per istruzioni di migrazione e handoff completo vedere: `docs/HANDOFF.md`
 
 Se hai bisogno, posso aggiungere una sezione con esempi passo-passo per creare il primo ordine OCO via UI Telegram.

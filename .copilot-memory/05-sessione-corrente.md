@@ -159,4 +159,34 @@
 - `docs/ai/AI_HANDOFF_CURRENT.md`
 - `docs/ai/AI_DECISIONS_LOG.md`
 - `docs/ai/AI_PASS1_LAST_RUN.md`
+
+## Sessione Corrente - 2026-04-14
+
+### Obiettivo sessione
+- Usare mcp per valutare una possibile entrata su `XRPUSDC`.
+- Tradurre il quadro di mercato in un trailing buy compatibile con il bot.
+- Salvare il flusso decisionale in memoria e nei Markdown del progetto.
+
+### Passaggi fatti
+- Verificato che `XRPUSDC` non era disponibile direttamente nei feed mcp.
+- Usati `XRP` e `XRP-USD` come proxy per la lettura tecnica.
+- Ricostruita una fascia di pullback utile invece di fissare un livello assoluto.
+- Tradotta la lettura in un trailing buy parametrico, con soglie da ricalcolare quando il mercato cambia.
+- Aggiunto il prerequisito operativo: attivare sempre i tool `mcp finance` prima di valutare ingressi o soglie.
+- Proposto trailing buy con `tf=15`, rimbalzo minimo, protezione macro e uscita `oco` gia' pronta.
+- Salvata la logica trasversale in `.copilot-memory/08-xrpusdc-trailing-buy.md` e nell'indice fonti.
+
+### Comando di riferimento
+```text
+/B XRPUSDC <percent> QTY <limit> tf=<tf_minutes> btc_alert oco:tp=<tp>%,sl=trail:<sl>%
+```
+
+### Nota operativa
+- Le soglie vanno ricalcolate ogni volta sul quadro attuale del mercato.
+- La quantita' va sempre calcolata sul budget reale: `budget_usdc / limit`.
+
+## Script prevision.py
+- Creato un helper CLI nella root del progetto per automatizzare il flusso di analisi e produrre il comando trailing buy.
+- Lo script usa OHLCV pubblici Binance, i calcoli tecnici già presenti in `indicators.py` e stampa il comando pronto da incollare nel bot.
+- Il bot Telegram usa la stessa pipeline condivisa ed espone anche `/prevision`, così script e bot restano sincronizzati.
  
