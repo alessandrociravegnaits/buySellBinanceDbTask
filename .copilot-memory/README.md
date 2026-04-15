@@ -17,6 +17,7 @@ Questa cartella contiene riassunti di sessione e note operative in formato Markd
 - `06-ordinepulito-acquistopulito.md`: configurazione globale clean-entry e gating buy/OCO.
 - `07-documentazione-gain-next.md`: aggiornamento docs su gain storico e sync `next` trailing.
 - `08-xrpusdc-trailing-buy.md`: percorso mcp e settaggi trailing buy per XRPUSDC.
+ - `session-summary-2026-04-14.md`: riassunto sessione operativa 2026-04-14.
 
 ## Nota preferenza utente
 I riassunti di sessione vanno sempre salvati qui in `.copilot-memory/`, in formato MD e suddivisi per argomento.
