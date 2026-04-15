@@ -15,6 +15,7 @@ from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 import prevision
+from bot_functions import richiedi_supporti_resistenze
 from core import Action, Order, OrderBehavior, Trigger, build_engine
 from indicators import TechnicalIndicators
 from price_feeds import Binance1mClosePriceFeed
@@ -23,6 +24,17 @@ from storage import SQLiteStorage
 log = logging.getLogger(__name__)
 
 VALID_TF_MINUTES = {1, 5, 15, 30, 60, 120, 240, 1440}
+SR_VALID_TF_MINUTES = {1, 5, 15, 60, 240, 1440}
+SR_TF_TO_MINUTES = {
+    "1m": 1,
+    "5m": 5,
+    "15m": 15,
+    "1h": 60,
+    "4h": 240,
+    "1d": 1440,
+}
+SR_MINUTES_TO_TF = {value: key for key, value in SR_TF_TO_MINUTES.items()}
+SR_DEFAULT_RANGE_PERCENT = 20.0
 UI_STATE_KEY = "ui_state"
 UI_DRAFT_KEY = "ui_draft"
 CLEAN_ENTRY_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -781,8 +793,8 @@ class TelegramTradingBot:
         keyboard = [
             [KeyboardButton("🆕 Nuovo ordine"), KeyboardButton("📋 Ordini attivi")],
             [KeyboardButton("📜 Ordini storici"), KeyboardButton("🔮 Prevision")],
-            [KeyboardButton("⚙️ Impostazioni"), KeyboardButton("ℹ️ Info")],
-            [KeyboardButton("💰 Account")],
+            [KeyboardButton("🧭 Supporti&Resistenze"), KeyboardButton("⚙️ Impostazioni")],
+            [KeyboardButton("ℹ️ Info"), KeyboardButton("💰 Account")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -861,6 +873,24 @@ class TelegramTradingBot:
             [KeyboardButton("1"), KeyboardButton("5"), KeyboardButton("15"), KeyboardButton("30")],
             [KeyboardButton("60"), KeyboardButton("120"), KeyboardButton("240"), KeyboardButton("1440")],
             [KeyboardButton("Default"), KeyboardButton("Annulla")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _sr_tf_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("1m"), KeyboardButton("5m"), KeyboardButton("15m")],
+            [KeyboardButton("1h"), KeyboardButton("4h"), KeyboardButton("1d")],
+            [KeyboardButton("Default"), KeyboardButton("Annulla")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
+    def _sr_range_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("5%"), KeyboardButton("10%"), KeyboardButton("20%")],
+            [KeyboardButton("50%"), KeyboardButton("100%")],
+            [KeyboardButton("Annulla")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -1782,6 +1812,7 @@ class TelegramTradingBot:
             "/S SYMBOL PERCENT QTY [LIMIT] [@PAIRHOOK] [tf=MIN] - trailing sell\n"
             "/B SYMBOL PERCENT QTY LIMIT [tf=MIN] - trailing buy\n"
             "/prevision SYMBOL [BUDGET] [TF] [LOOKBACK] - genera comando trailing buy\n"
+            "/sr SYMBOL [TF] [AMPIEZZA_PCT] - supporti/resistenze vicini al prezzo attuale\n"
             "/t MINUTI - default tf nuovi ordini (1,5,15,30,60,120,240,1440)\n"
             "/a 0|1 [PERCENT] - alert BTCUSDT\n"
             "/ad PERCENT - soglia caduta BTC per protezione ordini flaggati\n"
@@ -1861,6 +1892,14 @@ class TelegramTradingBot:
             await self._send(
                 update,
                 "Prevision: inserisci SYMBOL (es. XRPUSDC).\nPuoi poi aggiungere budget, timeframe e lookback.",
+                reply_markup=self._cancel_keyboard(),
+            )
+            return
+        if ("supporti" in tokens and "resistenze" in tokens) or lowered == "supporti resistenze":
+            self._set_ui_state(context, "sr_symbol", {"kind": "supporti_resistenze"})
+            await self._send(
+                update,
+                "Supporti&Resistenze: inserisci SYMBOL (es. XRPUSDC).",
                 reply_markup=self._cancel_keyboard(),
             )
             return
@@ -2011,6 +2050,33 @@ class TelegramTradingBot:
                 )
                 self._clear_ui_state(context)
                 await self._send_chunked(update, ["Prevision pronta:", *result.summary_lines, "", "Comando:", result.command])
+                await self._show_main_menu(update)
+                return True
+            if state == "sr_symbol":
+                symbol = text.upper()
+                ok, message = self._validate_spot_symbol(symbol)
+                if not ok:
+                    await self._send(update, f"{message}\nReinserisci SYMBOL.", reply_markup=self._cancel_keyboard())
+                    return True
+                draft["symbol"] = symbol
+                self._set_ui_state(context, "sr_tf", draft)
+                await self._send(update, "Seleziona timeframe per l'analisi.", reply_markup=self._sr_tf_keyboard())
+                return True
+            if state == "sr_tf":
+                tf_minutes = self._parse_sr_tf_choice(text)
+                draft["tf_minutes"] = tf_minutes
+                self._set_ui_state(context, "sr_ampiezza", draft)
+                await self._send(
+                    update,
+                    "Inserisci ampiezza % (1-100) oppure scegli un preset rapido.",
+                    reply_markup=self._sr_range_keyboard(),
+                )
+                return True
+            if state == "sr_ampiezza":
+                range_pct = self._parse_sr_range_percent(text)
+                parts = ["/sr", draft["symbol"], str(int(draft.get("tf_minutes") or 15)), str(range_pct)]
+                await self._cmd_sr(update, parts)
+                self._clear_ui_state(context)
                 await self._show_main_menu(update)
                 return True
             if state == "simple_hook_choice":
@@ -2977,6 +3043,94 @@ class TelegramTradingBot:
             raise ValueError("Timeframe valido: 1,5,15,30,60,120,240,1440")
         return tf
 
+    def _parse_sr_tf_choice(self, text: str) -> int:
+        lowered = text.strip().lower()
+        if lowered.startswith("tf="):
+            lowered = lowered.split("=", 1)[1].strip()
+        if lowered == "default":
+            if self._default_tf_minutes in SR_VALID_TF_MINUTES:
+                return self._default_tf_minutes
+            return 15
+        if lowered in SR_TF_TO_MINUTES:
+            return SR_TF_TO_MINUTES[lowered]
+
+        try:
+            tf = int(lowered)
+        except ValueError as exc:
+            raise ValueError("Timeframe SR valido: 1m,5m,15m,1h,4h,1d oppure 1,5,15,60,240,1440") from exc
+
+        if tf not in SR_VALID_TF_MINUTES:
+            raise ValueError("Timeframe SR valido: 1m,5m,15m,1h,4h,1d oppure 1,5,15,60,240,1440")
+        return tf
+
+    @staticmethod
+    def _parse_sr_range_percent(text: str) -> float:
+        raw = text.strip().replace(",", ".").replace("%", "")
+        value = float(raw)
+        if value <= 0 or value > 100:
+            raise ValueError("Ampiezza valida: >0 e <=100")
+        return value
+
+    @staticmethod
+    def _sr_minutes_to_label(tf_minutes: int) -> str:
+        if tf_minutes not in SR_MINUTES_TO_TF:
+            raise ValueError("Timeframe SR non supportato")
+        return SR_MINUTES_TO_TF[tf_minutes]
+
+    @staticmethod
+    def _sr_filter_levels_by_range(levels: List[Dict[str, Any]], last_close: float, range_pct: float) -> List[Dict[str, Any]]:
+        if last_close <= 0:
+            return []
+
+        filtered: List[Dict[str, Any]] = []
+        for item in levels:
+            level = float(item.get("level") or 0.0)
+            if level <= 0:
+                continue
+            if "distance_pct_from_last_close" in item:
+                distance_pct = float(item.get("distance_pct_from_last_close") or 0.0)
+            else:
+                distance_pct = ((level - last_close) / last_close) * 100.0
+
+            if abs(distance_pct) <= range_pct:
+                enriched = dict(item)
+                enriched["distance_pct_from_last_close"] = round(distance_pct, 4)
+                filtered.append(enriched)
+
+        filtered.sort(
+            key=lambda x: (
+                abs(float(x.get("distance_pct_from_last_close") or 0.0)),
+                float(x.get("level") or 0.0),
+            )
+        )
+        return filtered
+
+    @staticmethod
+    def _sr_in_range(level: Optional[Dict[str, Any]], last_close: float, range_pct: float) -> bool:
+        if not level or last_close <= 0:
+            return False
+        price = float(level.get("level") or 0.0)
+        if price <= 0:
+            return False
+        dist = ((price - last_close) / last_close) * 100.0
+        return abs(dist) <= range_pct
+
+    @staticmethod
+    def _frame_to_sr_candles(frame: pd.DataFrame) -> List[Dict[str, Any]]:
+        candles: List[Dict[str, Any]] = []
+        for row in frame.itertuples(index=False):
+            candles.append(
+                {
+                    "timestamp": str(getattr(row, "timestamp")),
+                    "open": float(getattr(row, "open")),
+                    "high": float(getattr(row, "high")),
+                    "low": float(getattr(row, "low")),
+                    "close": float(getattr(row, "close")),
+                    "volume": float(getattr(row, "volume")),
+                }
+            )
+        return candles
+
     async def _on_slash_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update) or not update.effective_message:
             return
@@ -3011,6 +3165,8 @@ class TelegramTradingBot:
                 await self._cmd_e(update, parts)
             elif cmd == "/prevision":
                 await self._cmd_prevision(update, parts)
+            elif cmd == "/sr":
+                await self._cmd_sr(update, parts)
             elif cmd == "/setpulito":
                 await self._cmd_setpulito(update, parts)
             elif cmd == "/o":
@@ -3535,6 +3691,119 @@ class TelegramTradingBot:
 
         result = prevision.analyze_symbol(symbol, tf_minutes=tf_minutes, budget_quote=budget, lookback_bars=lookback)
         lines = ["Prevision pronta:", *result.summary_lines, "", "Comando:", result.command]
+        await self._send_chunked(update, lines)
+
+    async def _cmd_sr(self, update: Update, parts: List[str]):
+        if len(parts) < 2:
+            raise ValueError("Formato: /sr SYMBOL [TF] [AMPIEZZA_PCT]")
+
+        symbol = parts[1].upper()
+        ok, message = self._validate_spot_symbol(symbol)
+        if not ok:
+            raise ValueError(message)
+
+        tf_minutes = 15
+        range_pct = SR_DEFAULT_RANGE_PERCENT
+
+        if len(parts) >= 3 and parts[2].strip().lower() not in {"-", "none", "null"}:
+            tf_minutes = self._parse_sr_tf_choice(parts[2])
+        if len(parts) >= 4 and parts[3].strip().lower() not in {"-", "none", "null"}:
+            range_pct = self._parse_sr_range_percent(parts[3])
+
+        tf_label = self._sr_minutes_to_label(tf_minutes)
+        frame = self._fetch_ohlcv_for_indicators(symbol=symbol, tf_minutes=tf_minutes, limit=400)
+        candles = self._frame_to_sr_candles(frame)
+        analysis = richiedi_supporti_resistenze(
+            candles,
+            symbol=symbol,
+            timeframe=tf_label,
+            max_levels=20,
+        )
+
+        last_close = float(analysis.get("last_close") or 0.0)
+        if last_close <= 0:
+            raise RuntimeError("Impossibile determinare il last close per il simbolo richiesto")
+
+        supports = self._sr_filter_levels_by_range(analysis.get("supports") or [], last_close, range_pct)
+        resistances = self._sr_filter_levels_by_range(analysis.get("resistances") or [], last_close, range_pct)
+
+        secure_support = analysis.get("secure_support")
+        secure_resistance = analysis.get("secure_resistance")
+        secure_support_ok = bool(analysis.get("secure_support_ok"))
+        secure_resistance_ok = bool(analysis.get("secure_resistance_ok"))
+
+        range_low = max(0.0, last_close * (1.0 - range_pct / 100.0))
+        range_high = last_close * (1.0 + range_pct / 100.0)
+
+        lines: List[str] = [
+            f"Supporti&Resistenze {symbol}",
+            f"TF: {tf_label} | Last close: {last_close:.8g}",
+            f"Ampiezza: {range_pct:.2f}% | Range: {range_low:.8g} -> {range_high:.8g}",
+            "",
+            "Supporti vicini:",
+        ]
+
+        if not supports:
+            lines.append("- Nessun supporto nel range selezionato")
+        else:
+            for idx, item in enumerate(supports[:10], start=1):
+                level = float(item.get("level") or 0.0)
+                dist = float(item.get("distance_pct_from_last_close") or 0.0)
+                touches = item.get("touches", "-")
+                conf = item.get("confidence")
+                conf_text = f" conf={float(conf):.3f}" if conf is not None else ""
+                lines.append(f"- {idx}. {level:.8g} ({dist:+.2f}%) touches={touches}{conf_text}")
+
+        lines.append("")
+        lines.append("Resistenze vicine:")
+        if not resistances:
+            lines.append("- Nessuna resistenza nel range selezionato")
+        else:
+            for idx, item in enumerate(resistances[:10], start=1):
+                level = float(item.get("level") or 0.0)
+                dist = float(item.get("distance_pct_from_last_close") or 0.0)
+                touches = item.get("touches", "-")
+                conf = item.get("confidence")
+                conf_text = f" conf={float(conf):.3f}" if conf is not None else ""
+                lines.append(f"- {idx}. {level:.8g} ({dist:+.2f}%) touches={touches}{conf_text}")
+
+        lines.append("")
+        lines.append("Secure levels:")
+        if secure_support:
+            ss_level = float(secure_support.get("level") or 0.0)
+            ss_conf = float(secure_support.get("confidence") or 0.0)
+            ss_in_range = self._sr_in_range(secure_support, last_close, range_pct)
+            lines.append(
+                f"- supporto: {ss_level:.8g} conf={ss_conf:.3f} valido={'si' if secure_support_ok else 'no'} in_range={'si' if ss_in_range else 'no'}"
+            )
+        else:
+            lines.append("- supporto: n/d")
+
+        if secure_resistance:
+            sr_level = float(secure_resistance.get("level") or 0.0)
+            sr_conf = float(secure_resistance.get("confidence") or 0.0)
+            sr_in_range = self._sr_in_range(secure_resistance, last_close, range_pct)
+            lines.append(
+                f"- resistenza: {sr_level:.8g} conf={sr_conf:.3f} valido={'si' if secure_resistance_ok else 'no'} in_range={'si' if sr_in_range else 'no'}"
+            )
+        else:
+            lines.append("- resistenza: n/d")
+
+        self._storage.append_event(
+            "support_resistance_requested",
+            payload={
+                "symbol": symbol,
+                "tf": tf_label,
+                "tf_minutes": tf_minutes,
+                "range_pct": range_pct,
+                "last_close": last_close,
+                "supports_in_range": len(supports),
+                "resistances_in_range": len(resistances),
+                "secure_support_ok": secure_support_ok,
+                "secure_resistance_ok": secure_resistance_ok,
+            },
+        )
+
         await self._send_chunked(update, lines)
 
     async def _cmd_setpulito(self, update: Update, parts: List[str]):

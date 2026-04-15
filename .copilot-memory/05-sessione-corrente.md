@@ -189,4 +189,22 @@
 - Creato un helper CLI nella root del progetto per automatizzare il flusso di analisi e produrre il comando trailing buy.
 - Lo script usa OHLCV pubblici Binance, i calcoli tecnici già presenti in `indicators.py` e stampa il comando pronto da incollare nel bot.
 - Il bot Telegram usa la stessa pipeline condivisa ed espone anche `/prevision`, così script e bot restano sincronizzati.
+
+## Sessione Corrente - 2026-04-16
+
+### Obiettivo sessione
+- Integrare `BOT_HANDOFF.md` e `bot_functions.py` come riferimento unico per supporti/resistenze.
+- Implementare nuova UX Telegram `Supporti&Resistenze` con comando slash e menu guidato.
+
+### Implementazione in corso
+- Aggiunto comando `/sr SYMBOL [TF] [AMPIEZZA_PCT]` in `telegram_bot.py`.
+- Aggiunto bottone main menu `🧭 Supporti&Resistenze` con flow guidato `symbol -> tf -> ampiezza`.
+- Calcolo livelli delegato a `richiedi_supporti_resistenze(...)` su OHLCV Binance (`klines`).
+- Output con supporti/resistenze vicini al `last_close`, secure levels e confidence.
+
+### Regole operative fissate
+- Fonte runtime OHLCV: Binance API (non MCP Finance).
+- Ampiezza valida: `(0, 100]`.
+- Timeframe SR supportati: `1m`, `5m`, `15m`, `1h`, `4h`, `1d` (o minuti equivalenti).
+- Policy fail-closed: in errore input/dati nessun output parziale, bot sempre operativo.
  

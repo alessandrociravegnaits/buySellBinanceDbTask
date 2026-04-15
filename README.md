@@ -157,13 +157,37 @@ python main.py
 
 Comandi supportati (interfaccia Telegram):
 - `/info` (mostra guida comandi e, nella sezione "Valori correnti", i runtime settings)
-- `/t` `/a` `/ad` `/e` `/s` `/b` `/f` `/S` `/B` `/c ORDER_ID` oppure `/c a` `/o`
+- `/t` `/a` `/ad` `/e` `/s` `/b` `/f` `/S` `/B` `/sr` `/c ORDER_ID` oppure `/c a` `/o`
 
 Menu principale:
 - `📜 Ordini storici` apre un sottomenu `1gg`, `3gg`, `7gg`, `30gg` e mostra gli ordini non attivi chiusi nel periodo selezionato.
+- `🧭 Supporti&Resistenze` avvia un flusso guidato (`symbol -> timeframe -> ampiezza %`) e mostra i livelli vicini al prezzo attuale.
 - Questa prima versione legge solo il DB principale (`data/bot.sqlite3`), non gli archivi mensili in `data/archive/`.
 
 Nel menu `Impostazioni -> Cancella ordine` puoi ora toccare direttamente i bottoni sintetici `#id:pair:tipo` (es. `#42:BTCUSDT:buy`) senza digitare l'ID a mano.
+
+## Supporti&Resistenze (nuovo)
+
+Comando testuale:
+
+```text
+/sr SYMBOL [TF] [AMPIEZZA_PCT]
+```
+
+Esempi:
+
+```text
+/sr XRPUSDC
+/sr XRPUSDC 15 20
+/sr BTCUSDT 1h 50
+```
+
+Regole operative:
+- Fonte dati OHLCV: API Binance (`klines`) via client del bot.
+- Timeframe supportati: `1m`, `5m`, `15m`, `1h`, `4h`, `1d` (equivalenti minuti: `1`, `5`, `15`, `60`, `240`, `1440`).
+- Ampiezza (`AMPIEZZA_PCT`) valida in range `(0, 100]`.
+- Il bot mostra supporti/resistenze vicini al `last_close`, filtrando i livelli con distanza percentuale assoluta entro l'ampiezza scelta.
+- Output include anche `secure_support`/`secure_resistance` con relativo stato di validita e confidenza.
 
 ## Post-Fill Auto OCO (nuovo)
 

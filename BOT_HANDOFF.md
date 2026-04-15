@@ -182,3 +182,47 @@ Non passare testo libero al motore aspettandoti che calcoli livelli. Il motore v
 ## In una frase
 
 Se vuoi solo che l'altro bot sia operativo, copia `bot_functions.py`. Se vuoi anche il layer libro/knowledge, aggiungi `knowledge_service.py` e il relativo `.lancedb`.
+
+## Integrazione Telegram Supporti&Resistenze
+
+Riferimento operativo unico per il bot Telegram:
+
+1. Usa `richiedi_supporti_resistenze(...)` come API numerica principale su OHLCV Binance.
+2. Usa `spiega_supporti_resistenze(...)` solo se serve testo descrittivo umano.
+3. Esporre la feature sia da comando testuale sia da menu guidato.
+
+### Comando consigliato
+
+```text
+/sr SYMBOL [TF] [AMPIEZZA_PCT]
+```
+
+- `TF`: `1m`, `5m`, `15m`, `1h`, `4h`, `1d` (o minuti equivalenti).
+- `AMPIEZZA_PCT`: range `(0, 100]` per filtrare livelli vicini al `last_close`.
+
+### Flusso UI consigliato
+
+`Supporti&Resistenze -> symbol -> timeframe -> ampiezza % -> output`
+
+### Regola di filtro vicinanza
+
+Mostrare solo livelli con:
+
+`abs(distance_pct_from_last_close) <= ampiezza_pct`
+
+Ordinare i livelli per vicinanza assoluta al prezzo corrente.
+
+### Output minimo da esporre
+
+- `last_close`
+- supporti nel range
+- resistenze nel range
+- `secure_support` e `secure_support_ok`
+- `secure_resistance` e `secure_resistance_ok`
+- `confidence`
+
+### Policy runtime
+
+- Fonte dati: Binance API (OHLCV).
+- Policy fail-closed: se input o dati OHLC sono invalidi/non disponibili, non calcolare output parziale.
+- Il bot deve restare operativo anche in errore, con messaggio utente chiaro.
