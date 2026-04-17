@@ -10,6 +10,7 @@ and never for the numeric decisions.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
@@ -47,14 +48,18 @@ BOOK_RULES: dict[str, dict[str, object]] = {
     "reaction_buffer_pct": {"1m": 0.05, "5m": 0.06, "15m": 0.08, "1h": 0.10, "4h": 0.15, "1d": 0.20, "4d": 0.22, "1w": 0.30},
     "volume_bonus_min_ratio": {"1m": 1.20, "5m": 1.20, "15m": 1.15, "1h": 1.12, "4h": 1.10, "1d": 1.08, "4d": 1.06, "1w": 1.05},
     "touch_band_pct": {"1m": 0.08, "5m": 0.10, "15m": 0.12, "1h": 0.15, "4h": 0.20, "1d": 0.30, "4d": 0.35, "1w": 0.45},
+    "timeframe_weight": {"1m": 0.92, "5m": 0.94, "15m": 0.96, "1h": 0.98, "4h": 1.00, "1d": 1.03, "4d": 1.06, "1w": 1.10},
     "multi_tf_bonus": 0.10,
-    "touch_weight": 0.28,
-    "multi_tf_weight": 0.24,
-    "reaction_weight": 0.22,
-    "recency_weight": 0.10,
-    "volume_weight": 0.10,
-    "distance_weight": 0.06,
-    "cluster_weight": 0.06,
+    "touch_weight": 0.22,
+    "multi_tf_weight": 0.16,
+    "reaction_weight": 0.14,
+    "recency_weight": 0.08,
+    "volume_weight": 0.08,
+    "distance_weight": 0.05,
+    "cluster_weight": 0.09,
+    "close_confirmation_weight": 0.08,
+    "role_reversal_weight": 0.06,
+    "round_number_weight": 0.04,
 }
 
 
@@ -169,6 +174,117 @@ def _cluster_quality_score(touches: int, span: int, series_len: int) -> float:
     touches_score = min(touches / 5.0, 1.0)
     span_score = min(span / max(series_len, 1), 1.0)
     return round((0.7 * touches_score) + (0.3 * span_score), 4)
+
+
+def _round_number_step(level: float) -> float:
+    abs_level = abs(level)
+    if abs_level >= 1000:
+        return 100.0
+    if abs_level >= 100:
+        return 10.0
+    if abs_level >= 10:
+        return 1.0
+    if abs_level >= 1:
+        return 0.1
+    if abs_level >= 0.1:
+        return 0.01
+    return 0.001
+
+
+def _round_number_score(level: float) -> tuple[float, float, float]:
+    step = _round_number_step(level)
+    nearest = round(level / step) * step
+    distance_pct = abs(level - nearest) / max(abs(level), 1e-9) * 100.0
+    score = max(0.0, 1.0 - min(distance_pct / 0.25, 1.0))
+    return round(score, 4), round(nearest, 6), round(distance_pct, 4)
+
+
+def _close_breakout_score(
+    candles: list[Candle],
+    level: float,
+    level_type: str,
+    lookahead: int,
+    buffer_pct: float,
+) -> float:
+    closes = [c.close for c in candles]
+    if len(closes) < 2:
+        return 0.0
+
+    buffer = buffer_pct / 100.0
+    min_follow = max(2, min(lookahead, 3))
+
+    if level_type == "support":
+        threshold = level * (1.0 + buffer)
+        for idx in range(1, len(closes)):
+            if closes[idx - 1] <= level and closes[idx] > threshold:
+                future = closes[idx : min(len(closes), idx + min_follow)]
+                if not future:
+                    return 0.0
+                confirmed = sum(close > threshold for close in future)
+                return round(confirmed / len(future), 4)
+    else:
+        threshold = level * (1.0 - buffer)
+        for idx in range(1, len(closes)):
+            if closes[idx - 1] >= level and closes[idx] < threshold:
+                future = closes[idx : min(len(closes), idx + min_follow)]
+                if not future:
+                    return 0.0
+                confirmed = sum(close < threshold for close in future)
+                return round(confirmed / len(future), 4)
+
+    return 0.0
+
+
+def _role_reversal_score(
+    candles: list[Candle],
+    level: float,
+    level_type: str,
+    lookahead: int,
+    buffer_pct: float,
+) -> float:
+    closes = [c.close for c in candles]
+    if len(closes) < 3:
+        return 0.0
+
+    buffer = buffer_pct / 100.0
+    retest_limit = max(2, lookahead)
+
+    if level_type == "support":
+        breakout_threshold = level * (1.0 + buffer)
+        breakout_idx = None
+        for idx in range(1, len(closes)):
+            if closes[idx - 1] <= level and closes[idx] > breakout_threshold:
+                breakout_idx = idx
+                break
+        if breakout_idx is None:
+            return 0.0
+
+        end_idx = min(len(candles), breakout_idx + 1 + retest_limit)
+        for idx in range(breakout_idx + 1, end_idx):
+            candle = candles[idx]
+            if candle.low <= level * (1.0 + buffer) and candle.close >= breakout_threshold:
+                post = closes[idx + 1 : min(len(closes), idx + 3)]
+                hold_ratio = 1.0 if not post else sum(close >= breakout_threshold for close in post) / len(post)
+                return round(min(1.0, 0.7 + 0.3 * hold_ratio), 4)
+    else:
+        breakout_threshold = level * (1.0 - buffer)
+        breakout_idx = None
+        for idx in range(1, len(closes)):
+            if closes[idx - 1] >= level and closes[idx] < breakout_threshold:
+                breakout_idx = idx
+                break
+        if breakout_idx is None:
+            return 0.0
+
+        end_idx = min(len(candles), breakout_idx + 1 + retest_limit)
+        for idx in range(breakout_idx + 1, end_idx):
+            candle = candles[idx]
+            if candle.high >= level * (1.0 - buffer) and candle.close <= breakout_threshold:
+                post = closes[idx + 1 : min(len(closes), idx + 3)]
+                hold_ratio = 1.0 if not post else sum(close <= breakout_threshold for close in post) / len(post)
+                return round(min(1.0, 0.7 + 0.3 * hold_ratio), 4)
+
+    return 0.0
 
 
 def _pivot_highs_lows(candles: list[Candle], window: int) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
@@ -297,6 +413,7 @@ def _secure_level_summary(
     reaction_buffer_pct = float(_book_value("reaction_buffer_pct", timeframe, 0.1))
     volume_bonus_ratio = float(_book_value("volume_bonus_min_ratio", timeframe, 1.1))
     touch_band_pct = float(_book_value("touch_band_pct", timeframe, 0.2))
+    timeframe_weight = float(_book_value("timeframe_weight", timeframe, 1.0))
     atr_like = _average_true_range_like(candles)
 
     for base in base_levels:
@@ -321,6 +438,21 @@ def _secure_level_summary(
             lookahead=lookahead,
             buffer_pct=reaction_buffer_pct,
         )
+        close_confirmation_score = _close_breakout_score(
+            candles,
+            level=level,
+            level_type=level_type,
+            lookahead=lookahead,
+            buffer_pct=reaction_buffer_pct,
+        )
+        role_reversal_score = _role_reversal_score(
+            candles,
+            level=level,
+            level_type=level_type,
+            lookahead=lookahead,
+            buffer_pct=reaction_buffer_pct,
+        )
+        round_number_score, nearest_round_number, round_number_distance_pct = _round_number_score(level)
         volume_ratio = _volume_ratio_at_touches(candles, touch_indices)
         volume_score = min(volume_ratio / max(volume_bonus_ratio, 1e-9), 1.0)
         distance_score = _price_distance_score(last_close, level, level_type, atr_like)
@@ -346,7 +478,11 @@ def _secure_level_summary(
                         + BOOK_RULES["volume_weight"] * volume_score
                         + BOOK_RULES["distance_weight"] * distance_score
                         + BOOK_RULES["cluster_weight"] * cluster_quality
-                    ),
+                        + float(BOOK_RULES["close_confirmation_weight"]) * close_confirmation_score
+                        + float(BOOK_RULES["role_reversal_weight"]) * role_reversal_score
+                        + float(BOOK_RULES["round_number_weight"]) * round_number_score
+                    )
+                    * timeframe_weight,
                     0.0,
                 ),
                 1.0,
@@ -363,6 +499,11 @@ def _secure_level_summary(
                 "last_touch_index": recency_index,
                 "distance_pct_from_last_close": round(proximity_pct, 4),
                 "reaction_score": reaction_score,
+                "close_confirmation_score": close_confirmation_score,
+                "role_reversal_score": role_reversal_score,
+                "round_number_score": round_number_score,
+                "nearest_round_number": nearest_round_number,
+                "round_number_distance_pct": round_number_distance_pct,
                 "volume_ratio": volume_ratio,
                 "volume_score": volume_score,
                 "distance_score": distance_score,
@@ -375,6 +516,9 @@ def _secure_level_summary(
                     "touches_ok": combined_touches >= touch_threshold,
                     "multi_tf_ok": confirmations >= 2,
                     "reaction_ok": reaction_score >= 0.5,
+                    "close_confirmation_ok": close_confirmation_score >= 0.5,
+                    "role_reversal_ok": role_reversal_score >= 0.5,
+                    "round_number_ok": round_number_score >= 0.5,
                     "volume_ok": volume_ratio >= volume_bonus_ratio,
                     "distance_ok": distance_score >= 0.25,
                 },
@@ -581,6 +725,10 @@ def richiedi_supporti_resistenze(
                 "reaction_buffer_pct": _book_value("reaction_buffer_pct", timeframe, 0.1),
                 "volume_bonus_min_ratio": _book_value("volume_bonus_min_ratio", timeframe, 1.1),
                 "touch_band_pct": _book_value("touch_band_pct", timeframe, 0.2),
+                "timeframe_weight": _book_value("timeframe_weight", timeframe, 1.0),
+                "close_confirmation_weight": BOOK_RULES["close_confirmation_weight"],
+                "role_reversal_weight": BOOK_RULES["role_reversal_weight"],
+                "round_number_weight": BOOK_RULES["round_number_weight"],
             },
         },
         "knowledge_notes": [],
