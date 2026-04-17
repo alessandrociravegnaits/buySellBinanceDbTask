@@ -24,7 +24,7 @@ from storage import SQLiteStorage
 log = logging.getLogger(__name__)
 
 VALID_TF_MINUTES = {1, 5, 15, 30, 60, 120, 240, 1440}
-SR_VALID_TF_MINUTES = {1, 5, 15, 60, 240, 1440}
+SR_VALID_TF_MINUTES = {1, 5, 15, 60, 240, 1440, 5760, 10080}
 SR_TF_TO_MINUTES = {
     "1m": 1,
     "5m": 5,
@@ -32,6 +32,8 @@ SR_TF_TO_MINUTES = {
     "1h": 60,
     "4h": 240,
     "1d": 1440,
+    "4d": 5760,
+    "1w": 10080,
 }
 SR_MINUTES_TO_TF = {value: key for key, value in SR_TF_TO_MINUTES.items()}
 SR_DEFAULT_RANGE_PERCENT = 20.0
@@ -881,6 +883,7 @@ class TelegramTradingBot:
         keyboard = [
             [KeyboardButton("1m"), KeyboardButton("5m"), KeyboardButton("15m")],
             [KeyboardButton("1h"), KeyboardButton("4h"), KeyboardButton("1d")],
+            [KeyboardButton("4d"), KeyboardButton("1w")],
             [KeyboardButton("Default"), KeyboardButton("Annulla")],
         ]
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -1300,6 +1303,7 @@ class TelegramTradingBot:
             120: "2h",
             240: "4h",
             1440: "1d",
+            10080: "1w",
         }
         if tf_minutes not in mapping:
             raise ValueError(f"Timeframe non supportato: {tf_minutes}")
@@ -1309,6 +1313,38 @@ class TelegramTradingBot:
         client = getattr(self._feed, "_client", None)
         if client is None:
             raise RuntimeError("Feed corrente non espone client OHLCV")
+
+        if tf_minutes == 5760:
+            # Binance non espone 4d nativo: aggrega candele 1d in bucket da 4 giorni.
+            daily_limit = max(limit * 4 + 8, 120)
+            rows = client.get_klines(symbol=symbol, interval="1d", limit=daily_limit)
+            if not rows:
+                raise RuntimeError(f"Nessuna candela disponibile per {symbol} tf={tf_minutes}")
+
+            base = pd.DataFrame(
+                {
+                    "timestamp": [r[0] for r in rows],
+                    "open": [float(r[1]) for r in rows],
+                    "high": [float(r[2]) for r in rows],
+                    "low": [float(r[3]) for r in rows],
+                    "close": [float(r[4]) for r in rows],
+                    "volume": [float(r[5]) for r in rows],
+                }
+            )
+            base["dt"] = pd.to_datetime(base["timestamp"], unit="ms", utc=True)
+            base = base.set_index("dt").sort_index()
+
+            agg = (
+                base.resample("4D", origin="epoch")
+                .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+                .dropna(subset=["open", "high", "low", "close"])
+            )
+            if agg.empty:
+                raise RuntimeError(f"Nessuna candela aggregata disponibile per {symbol} tf={tf_minutes}")
+
+            agg = agg.tail(limit).copy()
+            agg["timestamp"] = (agg.index.view("int64") // 10**6).astype("int64")
+            return agg[["timestamp", "open", "high", "low", "close", "volume"]].reset_index(drop=True)
 
         interval = self._tf_to_binance_interval(tf_minutes)
         rows = client.get_klines(symbol=symbol, interval=interval, limit=max(limit, 100))
@@ -2074,7 +2110,30 @@ class TelegramTradingBot:
                 return True
             if state == "sr_ampiezza":
                 range_pct = self._parse_sr_range_percent(text)
-                parts = ["/sr", draft["symbol"], str(int(draft.get("tf_minutes") or 15)), str(range_pct)]
+                draft["range_pct"] = range_pct
+                self._set_ui_state(context, "sr_secure_choice", draft)
+                await self._send(
+                    update,
+                    "Secure supports and resistances? (applica filtro trend)",
+                    reply_markup=self._yes_no_keyboard(),
+                )
+                return True
+            if state == "sr_secure_choice":
+                if normalized == "si":
+                    secure_choice = "si"
+                elif normalized == "no":
+                    secure_choice = "no"
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
+
+                parts = [
+                    "/sr",
+                    draft["symbol"],
+                    str(int(draft.get("tf_minutes") or 15)),
+                    str(float(draft.get("range_pct") or SR_DEFAULT_RANGE_PERCENT)),
+                    secure_choice,
+                ]
                 await self._cmd_sr(update, parts)
                 self._clear_ui_state(context)
                 await self._show_main_menu(update)
@@ -3047,6 +3106,8 @@ class TelegramTradingBot:
         lowered = text.strip().lower()
         if lowered.startswith("tf="):
             lowered = lowered.split("=", 1)[1].strip()
+        if lowered == "w":
+            lowered = "1w"
         if lowered == "default":
             if self._default_tf_minutes in SR_VALID_TF_MINUTES:
                 return self._default_tf_minutes
@@ -3057,10 +3118,10 @@ class TelegramTradingBot:
         try:
             tf = int(lowered)
         except ValueError as exc:
-            raise ValueError("Timeframe SR valido: 1m,5m,15m,1h,4h,1d oppure 1,5,15,60,240,1440") from exc
+            raise ValueError("Timeframe SR valido: 1m,5m,15m,1h,4h,1d,4d,1w oppure 1,5,15,60,240,1440,5760,10080") from exc
 
         if tf not in SR_VALID_TF_MINUTES:
-            raise ValueError("Timeframe SR valido: 1m,5m,15m,1h,4h,1d oppure 1,5,15,60,240,1440")
+            raise ValueError("Timeframe SR valido: 1m,5m,15m,1h,4h,1d,4d,1w oppure 1,5,15,60,240,1440,5760,10080")
         return tf
 
     @staticmethod
@@ -3713,11 +3774,20 @@ class TelegramTradingBot:
         tf_label = self._sr_minutes_to_label(tf_minutes)
         frame = self._fetch_ohlcv_for_indicators(symbol=symbol, tf_minutes=tf_minutes, limit=400)
         candles = self._frame_to_sr_candles(frame)
+        # parse optional secure flag (parts[4]) if provided: si/no
+        apply_trend_filter = False
+        try:
+            if len(parts) >= 5 and parts[4].strip().lower() in {"si", "yes", "true"}:
+                apply_trend_filter = True
+        except Exception:
+            apply_trend_filter = False
+
         analysis = richiedi_supporti_resistenze(
             candles,
             symbol=symbol,
             timeframe=tf_label,
             max_levels=20,
+            apply_trend_filter=apply_trend_filter,
         )
 
         last_close = float(analysis.get("last_close") or 0.0)
@@ -3739,6 +3809,7 @@ class TelegramTradingBot:
             f"Supporti&Resistenze {symbol}",
             f"TF: {tf_label} | Last close: {last_close:.8g}",
             f"Ampiezza: {range_pct:.2f}% | Range: {range_low:.8g} -> {range_high:.8g}",
+            f"Secure supports and resistances: {'si' if apply_trend_filter else 'no'}",
             "",
             "Supporti vicini:",
         ]
@@ -3796,6 +3867,7 @@ class TelegramTradingBot:
                 "tf": tf_label,
                 "tf_minutes": tf_minutes,
                 "range_pct": range_pct,
+                "apply_trend_filter": apply_trend_filter,
                 "last_close": last_close,
                 "supports_in_range": len(supports),
                 "resistances_in_range": len(resistances),

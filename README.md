@@ -161,7 +161,7 @@ Comandi supportati (interfaccia Telegram):
 
 Menu principale:
 - `📜 Ordini storici` apre un sottomenu `1gg`, `3gg`, `7gg`, `30gg` e mostra gli ordini non attivi chiusi nel periodo selezionato.
-- `🧭 Supporti&Resistenze` avvia un flusso guidato (`symbol -> timeframe -> ampiezza %`) e mostra i livelli vicini al prezzo attuale.
+- `🧭 Supporti&Resistenze` avvia un flusso guidato (`symbol -> timeframe -> ampiezza % -> secure supports and resistances si/no`) e mostra i livelli vicini al prezzo attuale.
 - Questa prima versione legge solo il DB principale (`data/bot.sqlite3`), non gli archivi mensili in `data/archive/`.
 
 Nel menu `Impostazioni -> Cancella ordine` puoi ora toccare direttamente i bottoni sintetici `#id:pair:tipo` (es. `#42:BTCUSDT:buy`) senza digitare l'ID a mano.
@@ -171,7 +171,7 @@ Nel menu `Impostazioni -> Cancella ordine` puoi ora toccare direttamente i botto
 Comando testuale:
 
 ```text
-/sr SYMBOL [TF] [AMPIEZZA_PCT]
+/sr SYMBOL [TF] [AMPIEZZA_PCT] [SECURE_SI_NO]
 ```
 
 Esempi:
@@ -180,12 +180,15 @@ Esempi:
 /sr XRPUSDC
 /sr XRPUSDC 15 20
 /sr BTCUSDT 1h 50
+/sr BTCUSDT 4d 30 si
+/sr ETHUSDT 1w 25 no
 ```
 
 Regole operative:
 - Fonte dati OHLCV: API Binance (`klines`) via client del bot.
-- Timeframe supportati: `1m`, `5m`, `15m`, `1h`, `4h`, `1d` (equivalenti minuti: `1`, `5`, `15`, `60`, `240`, `1440`).
+- Timeframe supportati: `1m`, `5m`, `15m`, `1h`, `4h`, `1d`, `4d`, `1w` (equivalenti minuti: `1`, `5`, `15`, `60`, `240`, `1440`, `5760`, `10080`; alias input accettato: `w`).
 - Ampiezza (`AMPIEZZA_PCT`) valida in range `(0, 100]`.
+- `SECURE_SI_NO` e opzionale (`si`/`no`): se `si`, applica filtro trend (EMA20) al flag `secure_*_ok`.
 - Il bot mostra supporti/resistenze vicini al `last_close`, filtrando i livelli con distanza percentuale assoluta entro l'ampiezza scelta.
 - Output include anche `secure_support`/`secure_resistance` con relativo stato di validita e confidenza.
 

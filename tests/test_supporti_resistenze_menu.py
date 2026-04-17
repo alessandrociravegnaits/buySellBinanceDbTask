@@ -138,6 +138,9 @@ def test_supporti_resistenze_guided_flow_calls_sr(tmp_path):
     assert context.user_data.get("ui_state") == "sr_ampiezza"
 
     asyncio.run(bot._handle_guided_flow(update, context, "20%"))
+    assert context.user_data.get("ui_state") == "sr_secure_choice"
+
+    asyncio.run(bot._handle_guided_flow(update, context, "si"))
 
     assert "ui_state" not in context.user_data
     assert captured["menu_shown"] is True
@@ -145,6 +148,7 @@ def test_supporti_resistenze_guided_flow_calls_sr(tmp_path):
     assert captured["parts"][0] == "/sr"
     assert captured["parts"][1] == "XRPUSDC"
     assert captured["parts"][2] == "15"
+    assert captured["parts"][4] == "si"
 
     bot._storage.close()
 
@@ -156,4 +160,12 @@ def test_cmd_sr_rejects_range_over_100(tmp_path):
     with pytest.raises(ValueError, match="Ampiezza valida"):
         asyncio.run(bot._cmd_sr(_DummyUpdate(), ["/sr", "XRPUSDC", "15", "150"]))
 
+    bot._storage.close()
+
+
+def test_sr_week_alias_and_label_are_stable(tmp_path):
+    bot = _make_bot(tmp_path)
+    assert bot._parse_sr_tf_choice("w") == 10080
+    assert bot._parse_sr_tf_choice("1w") == 10080
+    assert bot._sr_minutes_to_label(10080) == "1w"
     bot._storage.close()

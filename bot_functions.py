@@ -13,6 +13,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
+import pandas as pd
+
+from indicators import TechnicalIndicators
 
 
 @dataclass
@@ -32,17 +35,18 @@ TIMEFRAME_PROFILES: dict[str, dict[str, object]] = {
     "1h": {"base_window": 3, "tolerance_pct": 0.40, "analysis_windows": (3, 6, 10)},
     "4h": {"base_window": 4, "tolerance_pct": 0.50, "analysis_windows": (4, 8, 12)},
     "1d": {"base_window": 5, "tolerance_pct": 0.60, "analysis_windows": (5, 10, 15)},
+    "4d": {"base_window": 5, "tolerance_pct": 0.65, "analysis_windows": (5, 10, 15)},
     "1w": {"base_window": 6, "tolerance_pct": 0.80, "analysis_windows": (6, 12, 18)},
 }
 
 
 BOOK_RULES: dict[str, dict[str, object]] = {
-    "touches_min": {"1m": 3, "5m": 3, "15m": 3, "1h": 2, "4h": 2, "1d": 2, "1w": 2},
-    "secure_threshold": {"1m": 0.80, "5m": 0.78, "15m": 0.76, "1h": 0.74, "4h": 0.72, "1d": 0.70, "1w": 0.68},
-    "retest_lookahead": {"1m": 2, "5m": 2, "15m": 3, "1h": 3, "4h": 4, "1d": 5, "1w": 6},
-    "reaction_buffer_pct": {"1m": 0.05, "5m": 0.06, "15m": 0.08, "1h": 0.10, "4h": 0.15, "1d": 0.20, "1w": 0.30},
-    "volume_bonus_min_ratio": {"1m": 1.20, "5m": 1.20, "15m": 1.15, "1h": 1.12, "4h": 1.10, "1d": 1.08, "1w": 1.05},
-    "touch_band_pct": {"1m": 0.08, "5m": 0.10, "15m": 0.12, "1h": 0.15, "4h": 0.20, "1d": 0.30, "1w": 0.45},
+    "touches_min": {"1m": 3, "5m": 3, "15m": 3, "1h": 2, "4h": 2, "1d": 2, "4d": 2, "1w": 2},
+    "secure_threshold": {"1m": 0.80, "5m": 0.78, "15m": 0.76, "1h": 0.74, "4h": 0.72, "1d": 0.70, "4d": 0.69, "1w": 0.68},
+    "retest_lookahead": {"1m": 2, "5m": 2, "15m": 3, "1h": 3, "4h": 4, "1d": 5, "4d": 5, "1w": 6},
+    "reaction_buffer_pct": {"1m": 0.05, "5m": 0.06, "15m": 0.08, "1h": 0.10, "4h": 0.15, "1d": 0.20, "4d": 0.22, "1w": 0.30},
+    "volume_bonus_min_ratio": {"1m": 1.20, "5m": 1.20, "15m": 1.15, "1h": 1.12, "4h": 1.10, "1d": 1.08, "4d": 1.06, "1w": 1.05},
+    "touch_band_pct": {"1m": 0.08, "5m": 0.10, "15m": 0.12, "1h": 0.15, "4h": 0.20, "1d": 0.30, "4d": 0.35, "1w": 0.45},
     "multi_tf_bonus": 0.10,
     "touch_weight": 0.28,
     "multi_tf_weight": 0.24,
@@ -421,6 +425,7 @@ def richiedi_supporti_resistenze(
     pivot_window: int = 2,
     tolerance_pct: float = 0.4,
     secure_threshold: float | None = None,
+    apply_trend_filter: bool = False,
 ) -> dict:
     """Hardcoded support/resistance function, knowledge-augmented.
 
@@ -446,6 +451,7 @@ def richiedi_supporti_resistenze(
 
     tf_profile = _resolve_timeframe_profile(timeframe)
     effective_window = max(int(tf_profile.get("base_window", pivot_window)), max(pivot_window, 1))
+    # initial tolerance (may be adapted later using ATR)
     effective_tolerance = float(tf_profile.get("tolerance_pct", tolerance_pct)) if tolerance_pct is None else tolerance_pct
     window_profile = _analysis_windows(effective_window, tf_profile.get("analysis_windows"))
 
@@ -459,8 +465,32 @@ def richiedi_supporti_resistenze(
     effective_secure_threshold = default_secure_threshold if secure_threshold is None else float(secure_threshold)
 
     highs, lows = _pivot_highs_lows(normalized, window=effective_window)
-    resistance_raw = _cluster_levels(highs, tolerance_pct=effective_tolerance)
-    support_raw = _cluster_levels(lows, tolerance_pct=effective_tolerance)
+
+    # Build a small DataFrame for indicators to compute EMA/ATR when needed
+    df = pd.DataFrame(
+        [
+            {
+                "open": c.open,
+                "high": c.high,
+                "low": c.low,
+                "close": c.close,
+                "volume": c.volume if c.volume is not None else 0.0,
+            }
+            for c in normalized
+        ]
+    )
+
+    # compute ATR-like baseline and optionally EMA(20) for trend filtering
+    atr_like = _average_true_range_like(normalized)
+    last_close = normalized[-1].close
+
+    # adaptive tolerance: enlarge tolerance proportionally to recent ATR to account for volatility
+    atr_pct = (atr_like / max(last_close, 1e-9)) * 100.0 if last_close > 0 else 0.0
+    adaptive_tol = max(effective_tolerance, min(atr_pct * 1.5, 10.0))
+    effective_tolerance_adaptive = adaptive_tol
+
+    resistance_raw = _cluster_levels(highs, tolerance_pct=effective_tolerance_adaptive)
+    support_raw = _cluster_levels(lows, tolerance_pct=effective_tolerance_adaptive)
 
     confirmation_sets_support: list[list[dict]] = []
     confirmation_sets_resistance: list[list[dict]] = []
@@ -468,10 +498,10 @@ def richiedi_supporti_resistenze(
         if len(normalized) < (2 * window + 1):
             continue
         win_highs, win_lows = _pivot_highs_lows(normalized, window=window)
-        confirmation_sets_support.append(_cluster_levels(win_lows, tolerance_pct=effective_tolerance))
-        confirmation_sets_resistance.append(_cluster_levels(win_highs, tolerance_pct=effective_tolerance))
+        confirmation_sets_support.append(_cluster_levels(win_lows, tolerance_pct=effective_tolerance_adaptive))
+        confirmation_sets_resistance.append(_cluster_levels(win_highs, tolerance_pct=effective_tolerance_adaptive))
 
-    last_close = normalized[-1].close
+    # last_close already computed above
     supports = _filter_by_last_close(support_raw, last_close, "support", max_levels=max_levels)
     resistances = _filter_by_last_close(resistance_raw, last_close, "resistance", max_levels=max_levels)
     supports = _enrich_with_distance(supports, last_close)
@@ -484,7 +514,7 @@ def richiedi_supporti_resistenze(
         last_close=last_close,
         level_type="support",
         series_len=len(normalized),
-        tolerance_pct=effective_tolerance,
+        tolerance_pct=effective_tolerance_adaptive,
         timeframe=timeframe,
     )
     secure_resistance = _secure_level_summary(
@@ -494,12 +524,30 @@ def richiedi_supporti_resistenze(
         last_close=last_close,
         level_type="resistance",
         series_len=len(normalized),
-        tolerance_pct=effective_tolerance,
+        tolerance_pct=effective_tolerance_adaptive,
         timeframe=timeframe,
     )
 
     secure_support_ok = bool(secure_support and float(secure_support.get("confidence", 0.0)) >= effective_secure_threshold)
     secure_resistance_ok = bool(secure_resistance and float(secure_resistance.get("confidence", 0.0)) >= effective_secure_threshold)
+
+    # optional trend filter: prefer supports in uptrend and resistances in downtrend
+    trend_up = None
+    try:
+        ti = TechnicalIndicators.from_ohlcv(df)
+        ema20 = ti.ema(length=20)
+        ema20_last = float(ema20.iloc[-1]) if not ema20.empty else None
+        trend_up = None if ema20_last is None else (last_close >= ema20_last)
+    except Exception:
+        ema20_last = None
+        trend_up = None
+
+    if apply_trend_filter and trend_up is not None:
+        # require trend direction to match role: supports only in uptrend, resistances only in downtrend
+        if secure_support_ok and trend_up is False:
+            secure_support_ok = False
+        if secure_resistance_ok and trend_up is True:
+            secure_resistance_ok = False
 
     return {
         "symbol": symbol,
@@ -516,7 +564,11 @@ def richiedi_supporti_resistenze(
         "method": {
             "name": "hardcoded_pivot_cluster",
             "pivot_window": effective_window,
-            "tolerance_pct": effective_tolerance,
+            "base_tolerance_pct": effective_tolerance,
+            "tolerance_pct": effective_tolerance_adaptive,
+            "adaptive_tolerance": effective_tolerance_adaptive,
+            "applied_trend_filter": apply_trend_filter,
+            "ema_20": ema20_last if 'ema20_last' in locals() else None,
             "max_levels": max_levels,
             "series_len": len(normalized),
             "pivot_high_count": len(highs),
