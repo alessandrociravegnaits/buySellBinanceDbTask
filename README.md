@@ -351,6 +351,13 @@ python main.py
 
 Se preferisci, posso generare uno script di esportazione/import per `data/bot.sqlite3` e un `docs/HANDOFF.md` con checklist e comandi rapidi; dimmi se lo vuoi ora.
 
+## Session summaries
+
+- Directory: `.copilot-memory/` (repository root). Qui vengono salvati i riassunti di sessione suddivisi per argomento, in formato Markdown — utili per handoff, audit e ripartenze rapide.
+- Esempi: `.copilot-memory/09-supporti-resistenze-ui.md`, `.copilot-memory/session-summary-YYYY-MM-DD.md`.
+
+Questi file vengono aggiornati al termine delle sessioni e contengono: obiettivi, attività svolte, file aggiornati, stato test e prossimi passi.
+
 ## Indicatori Tecnici (nuovo)
 
 Il progetto include ora `indicators.py` con la classe `TechnicalIndicators`, pensata per essere richiamata dal bot nelle nuove regole operative.
