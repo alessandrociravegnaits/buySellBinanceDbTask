@@ -1,7 +1,5 @@
 . scrivo:
-aggiorna tutta la documentazione, in particolare: 
-Salva  i riassunti di sessione suddivisi per argomento  
-in .copilot-memory/  nella root del progetto, in formato MD.
+Salva sempre i riassunti di sessione suddivisi per argomento  in .copilot-memory/  nella root del progetto, in formato MD.
 
 . Lancio "rag"
 
@@ -9,3 +7,5 @@ in .copilot-memory/  nella root del progetto, in formato MD.
 
 . lui: 
 aggiorna lanceDb
+
+I chunk già embeddati restano nel DB; vengono aggiornati solo i file MD cambiati.

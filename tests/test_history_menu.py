@@ -250,3 +250,49 @@ def test_history_flow_renders_gain_for_linked_exit(tmp_path):
     assert "100 -> 110" in output
 
     bot._storage.close()
+
+
+def test_history_flow_renders_json_post_fill_action(tmp_path):
+    bot = _make_bot(tmp_path)
+    storage = bot._storage
+
+    oid = storage.next_order_id()
+    storage.save_simple_order(
+        order_id=oid,
+        chat_id=1,
+        side="buy",
+        symbol="BTCUSDT",
+        op="<",
+        trigger_value=60000.0,
+        qty=0.001,
+        hook_symbol=None,
+        core_order_id=oid,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        post_fill_action={"type": "oco", "tp": {"mode": "percent", "value": 1.5}, "sl": {"mode": "percent", "value": 0.8}},
+        acquistopulito=True,
+        status="filled",
+    )
+    _set_order_updated_at(storage, oid, (datetime.now(timezone.utc) - timedelta(days=1)).replace(microsecond=0).isoformat())
+
+    captured = {"text": "", "chunks": []}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["text"] = text
+
+    async def _capture_chunked(update, lines, max_chars=3500):
+        captured["chunks"] = list(lines)
+
+    bot._send = _capture_send
+    bot._send_chunked = _capture_chunked
+
+    context = _DummyContext()
+    context.user_data["ui_state"] = "history_days"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "1gg"))
+
+    output = "\n".join(captured["chunks"] or [captured["text"]])
+    assert "post_fill=oco(tp=percent:1.5,sl=percent:0.8)" in output
+
+    bot._storage.close()

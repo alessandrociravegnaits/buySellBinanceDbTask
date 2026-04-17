@@ -3957,9 +3957,16 @@ class TelegramTradingBot:
         await self._send(update, f"setPulito aggiornato: {self._clean_entry_summary()}")
 
     async def _cmd_o(self, update: Update):
-        def _post_fill_label(spec: Optional[Dict[str, Any]]) -> str:
+        def _post_fill_label(spec: Any) -> str:
             if not spec:
                 return "none"
+            if isinstance(spec, str):
+                try:
+                    spec = json.loads(spec)
+                except Exception:
+                    return spec
+            if not isinstance(spec, dict):
+                return str(spec)
             if spec.get("type") != "oco":
                 return str(spec.get("type"))
             tp = spec.get("tp") or {}
@@ -4030,9 +4037,16 @@ class TelegramTradingBot:
         await self._send(update, "\n".join(lines))
 
     async def _cmd_history_orders(self, update: Update, days: int):
-        def _post_fill_label(spec: Optional[Dict[str, Any]]) -> str:
+        def _post_fill_label(spec: Any) -> str:
             if not spec:
                 return "none"
+            if isinstance(spec, str):
+                try:
+                    spec = json.loads(spec)
+                except Exception:
+                    return spec
+            if not isinstance(spec, dict):
+                return str(spec)
             if spec.get("type") != "oco":
                 return str(spec.get("type"))
             tp = spec.get("tp") or {}

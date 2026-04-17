@@ -243,6 +243,15 @@ class SQLiteStorage:
         return None
 
     @staticmethod
+    def _decode_json_value(value: Any) -> Any:
+        if not isinstance(value, str) or not value:
+            return value
+        try:
+            return json.loads(value)
+        except Exception:
+            return value
+
+    @staticmethod
     def _gain_event_types(kind: str, side: Optional[str]) -> List[str]:
         kind_norm = (kind or "").strip().lower()
         side_norm = (side or "").strip().lower()
@@ -702,9 +711,9 @@ class SQLiteStorage:
                 })
 
         return cast(Dict[str, List[Dict[str, Any]]], {
-            "simple": [dict(r) for r in simple],
-            "function": [dict(r) for r in function],
-            "trailing": [dict(r) for r in trailing],
+            "simple": [{**dict(r), "post_fill_action": self._decode_json_value(r["post_fill_action"])} for r in simple],
+            "function": [{**dict(r), "post_fill_action": self._decode_json_value(r["post_fill_action"])} for r in function],
+            "trailing": [{**dict(r), "post_fill_action": self._decode_json_value(r["post_fill_action"])} for r in trailing],
             "oco": oco,
         })
 
@@ -727,7 +736,7 @@ class SQLiteStorage:
                 (cutoff_iso,),
             ).fetchall()
 
-            simple_rows = [dict(r) for r in simple]
+            simple_rows = [{**dict(r), "post_fill_action": self._decode_json_value(r["post_fill_action"])} for r in simple]
             for row in simple_rows:
                 row.update(self._get_order_gain_summary_locked(int(row["order_id"])))
 
@@ -744,7 +753,7 @@ class SQLiteStorage:
                 (cutoff_iso,),
             ).fetchall()
 
-            function_rows = [dict(r) for r in function]
+            function_rows = [{**dict(r), "post_fill_action": self._decode_json_value(r["post_fill_action"])} for r in function]
             for row in function_rows:
                 row.update(self._get_order_gain_summary_locked(int(row["order_id"])))
 
@@ -762,7 +771,7 @@ class SQLiteStorage:
                 (cutoff_iso,),
             ).fetchall()
 
-            trailing_rows = [dict(r) for r in trailing]
+            trailing_rows = [{**dict(r), "post_fill_action": self._decode_json_value(r["post_fill_action"])} for r in trailing]
             for row in trailing_rows:
                 row.update(self._get_order_gain_summary_locked(int(row["order_id"])))
 
