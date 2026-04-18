@@ -3751,8 +3751,8 @@ class TelegramTradingBot:
             lookback = int(parts[4])
 
         result = prevision.analyze_symbol(symbol, tf_minutes=tf_minutes, budget_quote=budget, lookback_bars=lookback)
-        lines = ["Prevision pronta:", *result.summary_lines, "", "Comando:", result.command]
-        await self._send_chunked(update, lines)
+        await self._send_chunked(update, ["Prevision pronta:", *result.summary_lines])
+        await self._send(update, result.command)
 
     async def _cmd_sr(self, update: Update, parts: List[str]):
         if len(parts) < 2:

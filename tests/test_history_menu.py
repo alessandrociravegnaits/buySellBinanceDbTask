@@ -3,6 +3,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+import prevision
 from telegram_bot import TelegramTradingBot
 
 
@@ -294,5 +295,50 @@ def test_history_flow_renders_json_post_fill_action(tmp_path):
 
     output = "\n".join(captured["chunks"] or [captured["text"]])
     assert "post_fill=oco(tp=percent:1.5,sl=percent:0.8)" in output
+
+    bot._storage.close()
+
+
+def test_prevision_sends_command_in_separate_message(tmp_path, monkeypatch):
+    bot = _make_bot(tmp_path)
+    bot._validate_spot_symbol = lambda symbol, field_name="SYMBOL": (True, "")
+
+    captured = {"chunked": [], "messages": []}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["messages"].append(text)
+
+    async def _capture_chunked(update, lines, max_chars=3500):
+        captured["chunked"].append(list(lines))
+
+    bot._send = _capture_send
+    bot._send_chunked = _capture_chunked
+
+    def _fake_analyze_symbol(symbol, tf_minutes, budget_quote, lookback_bars):
+        return prevision.AnalysisResult(
+            symbol="BTCUSDC",
+            tf_minutes=15,
+            close=100.0,
+            swing_high=110.0,
+            swing_low=90.0,
+            score=2,
+            bias="moderate",
+            support_level=95.0,
+            bounce_percent=1.5,
+            take_profit_percent=3.0,
+            stop_percent=1.2,
+            btc_alert=True,
+            acquistopulito=False,
+            quantity=0.01,
+            command="/B BTCUSDC 1.5 0.01 95 tf=15 btc_alert",
+            summary_lines=["linea 1", "linea 2"],
+        )
+
+    monkeypatch.setattr(prevision, "analyze_symbol", _fake_analyze_symbol)
+
+    asyncio.run(bot._cmd_prevision(_DummyUpdate(), ["/prevision", "BTCUSDC", "100", "15", "90"]))
+
+    assert captured["chunked"] == [["Prevision pronta:", "linea 1", "linea 2"]]
+    assert captured["messages"] == ["/B BTCUSDC 1.5 0.01 95 tf=15 btc_alert"]
 
     bot._storage.close()
