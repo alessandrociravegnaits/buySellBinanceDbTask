@@ -342,3 +342,60 @@ def test_prevision_sends_command_in_separate_message(tmp_path, monkeypatch):
     assert captured["messages"] == ["/B BTCUSDC 1.5 0.01 95 tf=15 btc_alert"]
 
     bot._storage.close()
+
+
+def test_prevision_guided_flow_sends_command_in_separate_message(tmp_path, monkeypatch):
+    bot = _make_bot(tmp_path)
+    bot._validate_spot_symbol = lambda symbol, field_name="SYMBOL": (True, "")
+
+    captured = {"chunked": [], "messages": []}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["messages"].append(text)
+
+    async def _capture_chunked(update, lines, max_chars=3500):
+        captured["chunked"].append(list(lines))
+
+    async def _noop_show_main_menu(update, text=None):
+        return None
+
+    bot._send = _capture_send
+    bot._send_chunked = _capture_chunked
+    bot._show_main_menu = _noop_show_main_menu
+
+    def _fake_analyze_symbol(symbol, tf_minutes, budget_quote, lookback_bars):
+        return prevision.AnalysisResult(
+            symbol="BTCUSDC",
+            tf_minutes=15,
+            close=100.0,
+            swing_high=110.0,
+            swing_low=90.0,
+            score=2,
+            bias="moderate",
+            support_level=95.0,
+            bounce_percent=1.5,
+            take_profit_percent=3.0,
+            stop_percent=1.2,
+            btc_alert=True,
+            acquistopulito=False,
+            quantity=0.01,
+            command="/B BTCUSDC 1.5 0.01 95 tf=15 btc_alert",
+            summary_lines=["linea 1", "linea 2"],
+        )
+
+    monkeypatch.setattr(prevision, "analyze_symbol", _fake_analyze_symbol)
+
+    context = _DummyContext()
+    context.user_data["ui_state"] = "prevision_lookback"
+    context.user_data["ui_draft"] = {
+        "symbol": "BTCUSDC",
+        "budget": 100.0,
+        "tf": 15,
+    }
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "90"))
+
+    assert captured["chunked"] == [["Prevision pronta:", "linea 1", "linea 2"]]
+    assert "/B BTCUSDC 1.5 0.01 95 tf=15 btc_alert" in captured["messages"]
+
+    bot._storage.close()

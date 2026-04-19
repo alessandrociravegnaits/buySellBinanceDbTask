@@ -2151,7 +2151,8 @@ class TelegramTradingBot:
                     lookback_bars=int(draft.get("lookback") or prevision.DEFAULT_LOOKBACK_BARS),
                 )
                 self._clear_ui_state(context)
-                await self._send_chunked(update, ["Prevision pronta:", *result.summary_lines, "", "Comando:", result.command])
+                await self._send_chunked(update, ["Prevision pronta:", *result.summary_lines])
+                await self._send(update, result.command)
                 await self._show_main_menu(update)
                 return True
             if state == "sr_symbol":
