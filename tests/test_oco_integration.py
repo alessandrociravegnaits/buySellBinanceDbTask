@@ -187,6 +187,162 @@ def test_auto_oco_with_trailing_sl_end_to_end(tmp_path):
     bot._storage.close()
 
 
+def test_attach_oco_reuses_existing_trailing_and_cancels_stale(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    bot._exchange_client = FakeExchangeClient()
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    oco_id = 500
+    legs = [
+        {"leg_index": 1, "ordertype": "trailing", "trail_percent": 1.2, "qty": 1.0, "side": "sell", "status": "waiting"},
+        {"leg_index": 2, "ordertype": "trailing", "trail_percent": 1.2, "qty": 1.0, "side": "sell", "status": "waiting"},
+    ]
+    bot._storage.save_oco_order(
+        order_id=oco_id,
+        chat_id=999,
+        symbol="BTCUSDT",
+        side="sell",
+        legs=legs,
+        hook_symbol=None,
+        tf_minutes=1,
+        next_eval_at=None,
+        last_eval_at=None,
+        status="active",
+    )
+
+    # Simulate pre-existing duplicated trailing legs from prior restarts.
+    trailing_specs = [
+        TrailingSellSpec(order_id=700, symbol="BTCUSDT", qty=1.0, percent=1.2, chat_id=999, limit=None, hook_symbol=None, tf_minutes=1, oco_parent_order_id=oco_id, oco_leg_index=1),
+        TrailingSellSpec(order_id=701, symbol="BTCUSDT", qty=1.0, percent=1.2, chat_id=999, limit=None, hook_symbol=None, tf_minutes=1, oco_parent_order_id=oco_id, oco_leg_index=1),
+        TrailingSellSpec(order_id=702, symbol="BTCUSDT", qty=1.0, percent=1.2, chat_id=999, limit=None, hook_symbol=None, tf_minutes=1, oco_parent_order_id=oco_id, oco_leg_index=2),
+        TrailingSellSpec(order_id=703, symbol="BTCUSDT", qty=1.0, percent=1.2, chat_id=999, limit=None, hook_symbol=None, tf_minutes=1, oco_parent_order_id=oco_id, oco_leg_index=2),
+    ]
+    bot._trailing_sell_orders = list(trailing_specs)
+    for spec in trailing_specs:
+        bot._storage.save_trailing_order(
+            order_id=spec.order_id,
+            chat_id=spec.chat_id,
+            side="sell",
+            symbol=spec.symbol,
+            qty=spec.qty,
+            percent=spec.percent,
+            limit_price=spec.limit,
+            hook_symbol=spec.hook_symbol,
+            armed=spec.armed,
+            max_price=spec.max_price,
+            min_price=None,
+            arm_op=spec.arm_op,
+            tf_minutes=spec.tf_minutes,
+            next_eval_at=spec.next_eval_at,
+            last_eval_at=spec.last_eval_at,
+            post_fill_action=None,
+            oco_parent_order_id=spec.oco_parent_order_id,
+            oco_leg_index=spec.oco_leg_index,
+            status=spec.status,
+        )
+
+    oco_spec = OcoSpec(order_id=oco_id, symbol="BTCUSDT", side="sell", legs=legs, chat_id=999, tf_minutes=1)
+    bot._attach_oco_to_engine(oco_spec)
+
+    # Latest trailing ids are reused, stale ones are cancelled.
+    leg1 = next(l for l in oco_spec.legs if int(l.get("leg_index")) == 1)
+    leg2 = next(l for l in oco_spec.legs if int(l.get("leg_index")) == 2)
+    assert int(leg1.get("core_order_id")) == 701
+    assert int(leg2.get("core_order_id")) == 703
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT status FROM orders WHERE order_id = 700")
+    assert cur.fetchone()[0] == "cancelled"
+    cur.execute("SELECT status FROM orders WHERE order_id = 702")
+    assert cur.fetchone()[0] == "cancelled"
+    cur.execute("SELECT status FROM orders WHERE order_id = 701")
+    assert cur.fetchone()[0] == "active"
+    cur.execute("SELECT status FROM orders WHERE order_id = 703")
+    assert cur.fetchone()[0] == "active"
+    conn.close()
+    bot._storage.close()
+
+
+def test_trailing_linked_to_non_active_oco_is_skipped_without_sell(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    bot._exchange_client = CountingExchangeClient()
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    stale_trailing = TrailingSellSpec(
+        order_id=800,
+        symbol="BTCUSDT",
+        qty=1.0,
+        percent=1.2,
+        chat_id=999,
+        limit=None,
+        hook_symbol=None,
+        armed=True,
+        max_price=100.0,
+        tf_minutes=1,
+        next_eval_at=0,
+        oco_parent_order_id=900,
+        oco_leg_index=1,
+        status="active",
+    )
+    bot._trailing_sell_orders = [stale_trailing]
+    bot._storage.save_trailing_order(
+        order_id=stale_trailing.order_id,
+        chat_id=stale_trailing.chat_id,
+        side="sell",
+        symbol=stale_trailing.symbol,
+        qty=stale_trailing.qty,
+        percent=stale_trailing.percent,
+        limit_price=stale_trailing.limit,
+        hook_symbol=stale_trailing.hook_symbol,
+        armed=stale_trailing.armed,
+        max_price=stale_trailing.max_price,
+        min_price=None,
+        arm_op=stale_trailing.arm_op,
+        tf_minutes=stale_trailing.tf_minutes,
+        next_eval_at=stale_trailing.next_eval_at,
+        last_eval_at=stale_trailing.last_eval_at,
+        post_fill_action=None,
+        oco_parent_order_id=stale_trailing.oco_parent_order_id,
+        oco_leg_index=stale_trailing.oco_leg_index,
+        status=stale_trailing.status,
+    )
+
+    # OCO exists in memory but is not active anymore.
+    bot._oco_orders = [
+        OcoSpec(
+            order_id=900,
+            symbol="BTCUSDT",
+            side="sell",
+            legs=[{"leg_index": 1, "ordertype": "trailing", "status": "cancelled"}],
+            chat_id=999,
+            tf_minutes=1,
+            status="filled",
+        )
+    ]
+
+    mock_feed.set_price(98.0)
+    bot._eval_trailing_sell(int(time.time()))
+
+    assert len(bot._exchange_client.calls) == 0
+    assert stale_trailing.status == "cancelled"
+    bot._storage.close()
+
+
 def test_trailing_sell_renews_next_eval_at_on_each_due_tick(tmp_path):
     db_path = str(tmp_path / "test_bot.sqlite3")
     archive_dir = str(tmp_path / "archive")

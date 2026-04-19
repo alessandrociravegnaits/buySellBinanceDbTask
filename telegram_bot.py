@@ -1557,10 +1557,40 @@ class TelegramTradingBot:
             ordertype = leg.get("ordertype")
 
             if ordertype == "trailing":
-                trailing_order_id = self._new_order_id()
                 trail_percent = float(leg.get("trail_percent") or 0.0)
                 if trail_percent <= 0:
                     raise ValueError(f"trail_percent non valido per OCO {spec.order_id} leg {leg_index}")
+
+                # Reuse already linked active trailing legs on restore to avoid duplicate executions.
+                linked_active = [
+                    t
+                    for t in self._trailing_sell_orders
+                    if t.status == "active"
+                    and t.oco_parent_order_id == spec.order_id
+                    and int(t.oco_leg_index or -1) == leg_index
+                ]
+                if linked_active:
+                    linked_active.sort(key=lambda t: int(t.order_id))
+                    chosen = linked_active[-1]
+                    stale = linked_active[:-1]
+                    for old in stale:
+                        old.status = "cancelled"
+                        self._storage.update_order_status(old.order_id, "cancelled")
+                        self._storage.append_event(
+                            "oco_leg_stale_trailing_cancelled",
+                            spec.order_id,
+                            {"leg_index": leg_index, "trailing_order_id": old.order_id},
+                        )
+                        try:
+                            self._trailing_sell_orders.remove(old)
+                        except ValueError:
+                            pass
+
+                    leg["core_order_id"] = chosen.order_id
+                    self._storage.update_oco_leg_core_order_id(spec.order_id, leg_index, chosen.order_id)
+                    continue
+
+                trailing_order_id = self._new_order_id()
 
                 trailing_spec = TrailingSellSpec(
                     order_id=trailing_order_id,
@@ -4432,6 +4462,39 @@ class TelegramTradingBot:
                     spec.max_price = price
                 trigger_price = spec.max_price * (1.0 - (spec.percent / 100.0))
                 if price < trigger_price:
+                    linked_oco = None
+                    linked_leg = None
+                    if spec.oco_parent_order_id is not None and spec.oco_leg_index is not None:
+                        for oco in getattr(self, "_oco_orders", []):
+                            if oco.order_id == spec.oco_parent_order_id:
+                                linked_oco = oco
+                                break
+                        if linked_oco is None or linked_oco.status != "active":
+                            spec.status = "cancelled"
+                            to_close.append(spec)
+                            self._storage.update_order_status(spec.order_id, "cancelled")
+                            self._storage.append_event(
+                                "oco_trailing_leg_skipped_stale",
+                                int(spec.oco_parent_order_id),
+                                {"leg_index": int(spec.oco_leg_index), "trailing_order_id": spec.order_id, "reason": "oco_not_active"},
+                            )
+                            continue
+
+                        for leg in linked_oco.legs:
+                            if int(leg.get("leg_index")) == int(spec.oco_leg_index):
+                                linked_leg = leg
+                                break
+                        if linked_leg is None or (linked_leg.get("status") or "waiting").lower() != "waiting":
+                            spec.status = "cancelled"
+                            to_close.append(spec)
+                            self._storage.update_order_status(spec.order_id, "cancelled")
+                            self._storage.append_event(
+                                "oco_trailing_leg_skipped_stale",
+                                int(spec.oco_parent_order_id),
+                                {"leg_index": int(spec.oco_leg_index), "trailing_order_id": spec.order_id, "reason": "leg_not_waiting"},
+                            )
+                            continue
+
                     exec_symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
                     try:
                         exchange_resp = self._execute_market_order_on_exchange("sell", exec_symbol, spec.qty)
@@ -4463,11 +4526,6 @@ class TelegramTradingBot:
                                     **self._exchange_fields(exchange_resp),
                                 },
                             )
-                            linked_oco = None
-                            for oco in getattr(self, "_oco_orders", []):
-                                if oco.order_id == spec.oco_parent_order_id:
-                                    linked_oco = oco
-                                    break
                             if linked_oco and linked_oco.status == "active":
                                 self._finalize_oco_leg_filled(
                                     linked_oco,
