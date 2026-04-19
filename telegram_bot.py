@@ -691,9 +691,11 @@ class TelegramTradingBot:
         return filtered, bool(value)
 
     @staticmethod
-    def _decode_post_fill_action(raw: Optional[str]) -> Optional[Dict[str, Any]]:
+    def _decode_post_fill_action(raw: Any) -> Optional[Dict[str, Any]]:
         if not raw:
             return None
+        if isinstance(raw, dict):
+            return raw
         try:
             decoded = json.loads(raw)
             return decoded if isinstance(decoded, dict) else None
@@ -813,6 +815,7 @@ class TelegramTradingBot:
     def _orders_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton("📉 Sell semplice"), KeyboardButton("📈 Buy semplice")],
+            [KeyboardButton("📉 Sell market"), KeyboardButton("📈 Buy market")],
             [KeyboardButton("⚙️ Function"), KeyboardButton("📉 Trailing Sell")],
             [KeyboardButton("📈 Trailing Buy")],
             [KeyboardButton("🔗 OCO Order")],
@@ -1122,7 +1125,19 @@ class TelegramTradingBot:
         """Simbolo di esecuzione: pairhook se presente, altrimenti simbolo trigger."""
         return hook_symbol or symbol
 
-    def _parse_simple_order(self, parts: List[str]) -> Tuple[str, str, float, float, Optional[str]]:
+    def _parse_simple_order(self, parts: List[str], market: bool = False) -> Tuple[str, str, float, float, Optional[str]]:
+        if market:
+            if len(parts) < 3:
+                raise ValueError("Formato: /s SYMBOL QTY [@PAIRHOOK]")
+            symbol = parts[1].upper()
+            qty = float(parts[2])
+            hook = None
+            for token in parts[3:]:
+                if token.startswith("@"):
+                    hook = token[1:].upper()
+                    break
+            return symbol, "market", 0.0, qty, hook
+
         if len(parts) < 5:
             raise ValueError("Formato: /s SYMBOL <|> TRIGGER QTY [@PAIRHOOK]")
         symbol = parts[1].upper()
@@ -1494,6 +1509,8 @@ class TelegramTradingBot:
         self._storage.update_oco_leg_status(oco_spec.order_id, leg_index, "waiting")
 
     def _build_trigger(self, trigger_id: int, op: str, threshold: float) -> Trigger:
+        if op == "market":
+            return Trigger(trigger_id, lambda p: True, "market")
         if op == "<":
             return Trigger(trigger_id, lambda p, t=threshold: p < t, f"prezzo < {threshold}")
         return Trigger(trigger_id, lambda p, t=threshold: p > t, f"prezzo > {threshold}")
@@ -1844,6 +1861,8 @@ class TelegramTradingBot:
             "Menu comandi:\n"
             "/s SYMBOL <|> TRIGGER QTY [@PAIRHOOK] [tf=MIN] - ordine sell\n"
             "/b SYMBOL <|> TRIGGER QTY [@PAIRHOOK] [tf=MIN] - ordine buy\n"
+            "/sm SYMBOL QTY [@PAIRHOOK] [tf=MIN] - sell immediata a mercato\n"
+            "/bm SYMBOL QTY [@PAIRHOOK] [tf=MIN] - buy immediata a mercato\n"
             "/f SYMBOL <|> TRIGGER QTY PERCENT [@PAIRHOOK] [tf=MIN] - buy poi trailing sell\n"
             "/S SYMBOL PERCENT QTY [LIMIT] [@PAIRHOOK] [tf=MIN] - trailing sell\n"
             "/B SYMBOL PERCENT QTY LIMIT [tf=MIN] - trailing buy\n"
@@ -1954,6 +1973,14 @@ class TelegramTradingBot:
             self._set_ui_state(context, "simple_symbol", {"kind": "simple", "side": "buy"})
             await self._send(update, "BUY semplice: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
             return
+        if lowered == "sell market":
+            self._set_ui_state(context, "simple_symbol", {"kind": "simple_market", "side": "sell", "market": True})
+            await self._send(update, "SELL market: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
+            return
+        if lowered == "buy market":
+            self._set_ui_state(context, "simple_symbol", {"kind": "simple_market", "side": "buy", "market": True})
+            await self._send(update, "BUY market: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
+            return
         if lowered == "function":
             self._set_ui_state(context, "function_symbol", {"kind": "function"})
             await self._send(update, "FUNCTION: inserisci SYMBOL (es. BTCUSDT)", reply_markup=self._cancel_keyboard())
@@ -2015,8 +2042,17 @@ class TelegramTradingBot:
                     await self._send(update, f"{message}\nReinserisci SYMBOL.", reply_markup=self._cancel_keyboard())
                     return True
                 draft["symbol"] = symbol
+                if draft.get("market"):
+                    self._set_ui_state(context, "simple_market_qty", draft)
+                    await self._send(update, "Inserisci quantity (es. 0.001)", reply_markup=self._cancel_keyboard())
+                    return True
                 self._set_ui_state(context, "simple_op", draft)
                 await self._send(update, "Scegli operatore trigger", reply_markup=self._operator_keyboard())
+                return True
+            if state == "simple_market_qty":
+                draft["qty"] = float(text)
+                self._set_ui_state(context, "simple_hook_choice", draft)
+                await self._send(update, "Vuoi usare un pairhook?", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "simple_op":
                 op_input = text.strip()
@@ -2264,13 +2300,20 @@ class TelegramTradingBot:
                 if normalized != "conferma":
                     await self._send(update, "Premi Conferma per creare l'ordine", reply_markup=self._confirm_keyboard())
                     return True
-                parts = [
-                    "/s" if draft["side"] == "sell" else "/b",
-                    draft["symbol"],
-                    draft["op"],
-                    str(draft["trigger"]),
-                    str(draft["qty"]),
-                ]
+                if draft.get("market"):
+                    parts = [
+                        "/s" if draft["side"] == "sell" else "/b",
+                        draft["symbol"],
+                        str(draft["qty"]),
+                    ]
+                else:
+                    parts = [
+                        "/s" if draft["side"] == "sell" else "/b",
+                        draft["symbol"],
+                        draft["op"],
+                        str(draft["trigger"]),
+                        str(draft["qty"]),
+                    ]
                 if draft.get("hook"):
                     parts.append(f"@{draft['hook']}")
                 parts.append(f"tf={draft['tf']}")
@@ -2280,7 +2323,7 @@ class TelegramTradingBot:
                     parts.append("btc_alert=1")
                 if draft.get("post_fill_action"):
                     parts.append(self._post_fill_action_to_token(draft["post_fill_action"]))
-                await self._cmd_simple(update, parts, side=draft["side"])
+                await self._cmd_simple(update, parts, side=draft["side"], market=bool(draft.get("market")))
                 self._clear_ui_state(context)
                 await self._show_orders_menu(update)
                 return True
@@ -3210,6 +3253,10 @@ class TelegramTradingBot:
                 await self._cmd_simple(update, parts, side="sell")
             elif cmd == "/b":
                 await self._cmd_simple(update, parts, side="buy")
+            elif cmd == "/sm":
+                await self._cmd_simple(update, ["/s", *parts[1:]], side="sell", market=True)
+            elif cmd == "/bm":
+                await self._cmd_simple(update, ["/b", *parts[1:]], side="buy", market=True)
             elif cmd == "/f":
                 await self._cmd_f(update, parts)
             elif cmd == "/S":
@@ -3353,12 +3400,12 @@ class TelegramTradingBot:
         )
         await self._send_chunked(update, lines)
 
-    async def _cmd_simple(self, update: Update, parts: List[str], side: str):
+    async def _cmd_simple(self, update: Update, parts: List[str], side: str, market: bool = False):
         parts, tf_minutes = self._extract_tf(parts)
         parts, post_fill_action = self._extract_post_fill_action(parts)
         parts, acquistopulito = self._extract_acquistopulito(parts)
         parts, btc_alert_liquidate = self._extract_btc_alert_liquidate(parts)
-        symbol, op, trigger_val, qty, hook = self._parse_simple_order(parts)
+        symbol, op, trigger_val, qty, hook = self._parse_simple_order(parts, market=market)
         ok, message = self._validate_spot_symbol(symbol)
         if not ok:
             raise ValueError(message)
@@ -3372,7 +3419,7 @@ class TelegramTradingBot:
             raise ValueError("acquistopulito supportato solo su ordini buy")
         chat_id = update.effective_chat.id
         order_id = self._new_order_id()
-        next_eval_at = self._next_boundary_epoch(tf_minutes)
+        next_eval_at = int(time.time()) if market else self._next_boundary_epoch(tf_minutes)
 
         spec = SimpleOrderSpec(
             order_id=order_id,
@@ -3389,7 +3436,8 @@ class TelegramTradingBot:
             acquistopulito=acquistopulito,
             btc_alert_liquidate=btc_alert_liquidate,
         )
-        self._attach_simple_to_engine(spec)
+        if not market:
+            self._attach_simple_to_engine(spec)
 
         self._storage.save_simple_order(
             order_id=spec.order_id,
@@ -3416,6 +3464,7 @@ class TelegramTradingBot:
                 "side": side,
                 "symbol": symbol,
                 "tf": tf_minutes,
+                "market": market,
                 "acquistopulito": spec.acquistopulito,
                 "btc_alert_liquidate": spec.btc_alert_liquidate,
             },
@@ -3426,6 +3475,20 @@ class TelegramTradingBot:
         else:
             self._buy_orders.append(spec)
         exec_symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
+        if market:
+            try:
+                market_price = float(self._feed.get_price(spec.symbol, spec.tf_minutes))
+            except Exception:
+                market_price = 0.0
+            self._on_simple_fired(spec, market_price)
+            if spec.status == "filled":
+                await self._send(update, f"Ordine {side} market eseguito: order_id={spec.order_id} watch={spec.symbol} exec={exec_symbol}")
+            elif spec.status == "active":
+                await self._send(update, f"Ordine {side} market creato: order_id={spec.order_id} in attesa condizioni clean-entry")
+            else:
+                await self._send(update, f"Ordine {side} market creato con stato={spec.status}: order_id={spec.order_id}")
+            return
+
         await self._send(update, f"Ordine {side} inserito: order_id={spec.order_id} watch={spec.symbol} exec={exec_symbol}")
 
     async def _cmd_f(self, update: Update, parts: List[str]):
@@ -3986,12 +4049,14 @@ class TelegramTradingBot:
         for s in self._sell_orders:
             if s.status != "active":
                 continue
-            lines.append(f"{s.order_id} watch={s.symbol} exec={self._exec_symbol(s.symbol, s.hook_symbol)} {s.op} {s.trigger} qty={s.qty} tf={s.tf_minutes}m next={_human_time(s.next_eval_at)} post_fill={_post_fill_label(s.post_fill_action)} btc_alert={s.btc_alert_liquidate} status={s.status}")
+            trigger_text = "market" if str(s.op).lower() == "market" else f"{s.op} {s.trigger}"
+            lines.append(f"{s.order_id} watch={s.symbol} exec={self._exec_symbol(s.symbol, s.hook_symbol)} {trigger_text} qty={s.qty} tf={s.tf_minutes}m next={_human_time(s.next_eval_at)} post_fill={_post_fill_label(s.post_fill_action)} btc_alert={s.btc_alert_liquidate} status={s.status}")
         lines.append("BUY:")
         for b in self._buy_orders:
             if b.status != "active":
                 continue
-            lines.append(f"{b.order_id} watch={b.symbol} exec={self._exec_symbol(b.symbol, b.hook_symbol)} {b.op} {b.trigger} qty={b.qty} tf={b.tf_minutes}m next={_human_time(b.next_eval_at)} post_fill={_post_fill_label(b.post_fill_action)} clean={b.acquistopulito} btc_alert={b.btc_alert_liquidate} status={b.status}")
+            trigger_text = "market" if str(b.op).lower() == "market" else f"{b.op} {b.trigger}"
+            lines.append(f"{b.order_id} watch={b.symbol} exec={self._exec_symbol(b.symbol, b.hook_symbol)} {trigger_text} qty={b.qty} tf={b.tf_minutes}m next={_human_time(b.next_eval_at)} post_fill={_post_fill_label(b.post_fill_action)} clean={b.acquistopulito} btc_alert={b.btc_alert_liquidate} status={b.status}")
         lines.append("FUNCTION:")
         for f in self._function_orders:
             if f.status != "active":
@@ -4101,8 +4166,10 @@ class TelegramTradingBot:
                 updated_at = _human_time(row.get("updated_at"))
                 tf = row.get("tf_minutes")
                 if key == "simple":
+                    op_value = str(row.get("op") or "")
+                    trigger_text = "market" if op_value.lower() == "market" else f"{op_value} {row.get('trigger_value')}"
                     lines.append(
-                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} {row.get('op')} {row.get('trigger_value')} qty={row.get('qty')} tf={tf}m updated={updated_at} gain={_format_gain(row)} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
+                        f"{oid} [{status}] {row.get('side')} {row.get('symbol')} {trigger_text} qty={row.get('qty')} tf={tf}m updated={updated_at} gain={_format_gain(row)} clean={row.get('acquistopulito')} btc_alert={row.get('btc_alert_liquidate')} post_fill={_post_fill_label(row.get('post_fill_action'))}"
                     )
                 elif key == "function":
                     lines.append(

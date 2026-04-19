@@ -119,3 +119,25 @@ def test_oco_buy_wizard_adds_btc_flag_choice(tmp_path):
     assert context.user_data["ui_draft"]["btc_alert_liquidate"] is False
 
     bot._storage.close()
+
+
+def test_buy_market_guided_flow_skips_trigger_step(tmp_path):
+    bot = _make_bot(tmp_path)
+    bot._validate_spot_symbol = lambda symbol, field_name="SYMBOL": (True, "")
+
+    captured = {"text": ""}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["text"] = text
+
+    bot._send = _capture_send
+
+    context = _DummyContext()
+    context.user_data["ui_state"] = "simple_symbol"
+    context.user_data["ui_draft"] = {"kind": "simple_market", "side": "buy", "market": True}
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "BTCUSDT"))
+
+    assert context.user_data["ui_state"] == "simple_market_qty"
+    assert "quantity" in captured["text"].lower()
+    bot._storage.close()
