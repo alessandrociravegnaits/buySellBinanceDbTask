@@ -890,6 +890,16 @@ class TelegramTradingBot:
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @staticmethod
+    def _prevision_lookback_hint(tf_minutes: int) -> str:
+        if tf_minutes <= 5:
+            return "Consiglio TF 1-5m: 120-240 barre (piu stabilita, meno rumore)."
+        if tf_minutes <= 30:
+            return "Consiglio TF 15-30m: 90-180 barre (compromesso reattivita/robustezza)."
+        if tf_minutes <= 240:
+            return "Consiglio TF 60-240m: 60-120 barre (focus su swing piu strutturali)."
+        return "Consiglio TF 1d: 30-90 barre (visione multi-settimanale)."
+
+    @staticmethod
     def _sr_tf_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton("1m"), KeyboardButton("5m"), KeyboardButton("15m")],
@@ -1984,7 +1994,17 @@ class TelegramTradingBot:
             self._set_ui_state(context, "prevision_symbol", {"kind": "prevision"})
             await self._send(
                 update,
-                "Prevision: inserisci SYMBOL (es. XRPUSDC).\nPuoi poi aggiungere budget, timeframe e lookback.",
+                "Prevision: inserisci SYMBOL (es. XRPUSDC).\n"
+                "Puoi poi aggiungere budget, timeframe e lookback.\n\n"
+                "Come usare il lookback:\n"
+                "- Prevision: il lookback definisce la finestra swing (high/low) per i livelli Fib del supporto operativo.\n"
+                "- SR: usa una pipeline dedicata ai livelli S/R, separata dalla logica Prevision.\n"
+                "- Regola generale (dal corpus): livelli validi da piu tempo sono in genere piu affidabili.\n\n"
+                "Guida rapida lookback per TF:\n"
+                "- 1m/5m: 120-240\n"
+                "- 15m/30m: 90-180\n"
+                "- 60m/240m: 60-120\n"
+                "- 1440m (1d): 30-90",
                 reply_markup=self._cancel_keyboard(),
             )
             return
@@ -2162,9 +2182,10 @@ class TelegramTradingBot:
                 else:
                     draft["tf"] = self._parse_tf_choice(text)
                 self._set_ui_state(context, "prevision_lookback", draft)
+                hint = self._prevision_lookback_hint(int(draft["tf"]))
                 await self._send(
                     update,
-                    f"Seleziona lookback barre (oppure scrivi un valore). Default={prevision.DEFAULT_LOOKBACK_BARS}.",
+                    f"Seleziona lookback barre (oppure scrivi un valore). Default={prevision.DEFAULT_LOOKBACK_BARS}.\n{hint}",
                     reply_markup=self._prevision_lookback_keyboard(),
                 )
                 return True

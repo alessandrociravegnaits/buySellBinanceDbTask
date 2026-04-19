@@ -174,3 +174,26 @@ def test_slash_sm_routes_to_market_sell(tmp_path):
     assert calls[0]["market"] is True
     assert calls[0]["parts"] == ["/s", "BTCUSDT", "0.1"]
     bot._storage.close()
+
+
+def test_prevision_opening_message_includes_pipeline_and_lookback_guidance(tmp_path):
+    bot = _make_bot(tmp_path)
+    context = _DummySlashContext()
+    captured = {"text": ""}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["text"] = text
+
+    bot._send = _capture_send
+
+    asyncio.run(bot._on_menu_text(_DummyUpdateWithMessage("Prevision"), context))
+
+    assert bot._get_ui_state(context) == "prevision_symbol"
+    assert "prevision" in captured["text"].lower()
+    assert "sr: usa una pipeline dedicata" in captured["text"].lower()
+    assert "1m/5m" in captured["text"].lower()
+    assert "15m/30m" in captured["text"].lower()
+    assert "60m/240m" in captured["text"].lower()
+    assert "1440m" in captured["text"].lower()
+
+    bot._storage.close()

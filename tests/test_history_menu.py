@@ -427,6 +427,7 @@ def test_prevision_guided_flow_shows_tf_and_lookback_keyboards(tmp_path):
     asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "15"))
 
     assert context.user_data["ui_state"] == "prevision_lookback"
+    assert "90-180" in captured["messages"][-1]["text"]
     lookback_markup = captured["messages"][-1]["reply_markup"]
     lookback_labels = [btn.text for row in lookback_markup.keyboard for btn in row]
     assert "30" in lookback_labels
