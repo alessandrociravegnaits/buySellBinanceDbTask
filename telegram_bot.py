@@ -815,7 +815,6 @@ class TelegramTradingBot:
     def _orders_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton("📉 Sell semplice"), KeyboardButton("📈 Buy semplice")],
-            [KeyboardButton("📉 Sell market"), KeyboardButton("📈 Buy market")],
             [KeyboardButton("⚙️ Function"), KeyboardButton("📉 Trailing Sell")],
             [KeyboardButton("📈 Trailing Buy")],
             [KeyboardButton("🔗 OCO Order")],
@@ -2072,12 +2071,30 @@ class TelegramTradingBot:
                     await self._send(update, f"{message}\nReinserisci SYMBOL.", reply_markup=self._cancel_keyboard())
                     return True
                 draft["symbol"] = symbol
-                if draft.get("market"):
+                # Backward compatibility: if market is already preselected, skip the new choice step.
+                if draft.get("market") is True:
                     self._set_ui_state(context, "simple_market_qty", draft)
                     await self._send(update, "Inserisci quantity (es. 0.001)", reply_markup=self._cancel_keyboard())
                     return True
-                self._set_ui_state(context, "simple_op", draft)
-                await self._send(update, "Scegli operatore trigger", reply_markup=self._operator_keyboard())
+                if draft.get("market") is False:
+                    self._set_ui_state(context, "simple_op", draft)
+                    await self._send(update, "Scegli operatore trigger", reply_markup=self._operator_keyboard())
+                    return True
+                self._set_ui_state(context, "simple_market_choice", draft)
+                await self._send(update, "Vuoi creare l'ordine a mercato?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "simple_market_choice":
+                if normalized == "si":
+                    draft["market"] = True
+                    self._set_ui_state(context, "simple_market_qty", draft)
+                    await self._send(update, "Inserisci quantity (es. 0.001)", reply_markup=self._cancel_keyboard())
+                    return True
+                if normalized == "no":
+                    draft["market"] = False
+                    self._set_ui_state(context, "simple_op", draft)
+                    await self._send(update, "Scegli operatore trigger", reply_markup=self._operator_keyboard())
+                    return True
+                await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                 return True
             if state == "simple_market_qty":
                 draft["qty"] = float(text)

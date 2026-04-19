@@ -101,13 +101,13 @@ def test_guided_flow_keeps_state_on_invalid_symbol(tmp_path):
     bot._storage.close()
 
 
-def test_orders_menu_contains_market_buttons(tmp_path):
+def test_orders_menu_hides_separate_market_buttons(tmp_path):
     bot = _make_bot(tmp_path)
     kb = bot._orders_menu_keyboard()
     labels = [btn.text for row in kb.keyboard for btn in row]
 
-    assert "📉 Sell market" in labels
-    assert "📈 Buy market" in labels
+    assert "📉 Sell market" not in labels
+    assert "📈 Buy market" not in labels
     bot._storage.close()
 
 
