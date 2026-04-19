@@ -881,6 +881,15 @@ class TelegramTradingBot:
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
     @staticmethod
+    def _prevision_lookback_keyboard() -> ReplyKeyboardMarkup:
+        keyboard = [
+            [KeyboardButton("30"), KeyboardButton("60"), KeyboardButton("90")],
+            [KeyboardButton("120"), KeyboardButton("180"), KeyboardButton("240")],
+            [KeyboardButton("Default"), KeyboardButton("Annulla")],
+        ]
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+    @staticmethod
     def _sr_tf_keyboard() -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton("1m"), KeyboardButton("5m"), KeyboardButton("15m")],
@@ -2141,25 +2150,31 @@ class TelegramTradingBot:
                 else:
                     draft["budget"] = float(text.replace(",", "."))
                 self._set_ui_state(context, "prevision_tf", draft)
-                await self._send(update, f"Inserisci timeframe minuti oppure skip per usare {prevision.DEFAULT_TF_MINUTES}.", reply_markup=self._cancel_keyboard())
+                await self._send(
+                    update,
+                    f"Seleziona timeframe minuti (oppure scrivi un valore). Default={prevision.DEFAULT_TF_MINUTES}.",
+                    reply_markup=self._tf_keyboard(),
+                )
                 return True
             if state == "prevision_tf":
                 if normalized in {"skip", "salta", "none", "null"}:
                     draft["tf"] = prevision.DEFAULT_TF_MINUTES
                 else:
-                    draft["tf"] = int(text)
+                    draft["tf"] = self._parse_tf_choice(text)
                 self._set_ui_state(context, "prevision_lookback", draft)
                 await self._send(
                     update,
-                    f"Inserisci lookback barre oppure skip per usare {prevision.DEFAULT_LOOKBACK_BARS}.",
-                    reply_markup=self._cancel_keyboard(),
+                    f"Seleziona lookback barre (oppure scrivi un valore). Default={prevision.DEFAULT_LOOKBACK_BARS}.",
+                    reply_markup=self._prevision_lookback_keyboard(),
                 )
                 return True
             if state == "prevision_lookback":
-                if normalized in {"skip", "salta", "none", "null"}:
+                if normalized in {"skip", "salta", "none", "null", "default"}:
                     draft["lookback"] = prevision.DEFAULT_LOOKBACK_BARS
                 else:
                     draft["lookback"] = int(text)
+                    if draft["lookback"] <= 0:
+                        raise ValueError("Lookback barre deve essere > 0")
 
                 result = prevision.analyze_symbol(
                     draft["symbol"],

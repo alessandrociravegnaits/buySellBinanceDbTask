@@ -399,3 +399,42 @@ def test_prevision_guided_flow_sends_command_in_separate_message(tmp_path, monke
     assert "/B BTCUSDC 1.5 0.01 95 tf=15 btc_alert" in captured["messages"]
 
     bot._storage.close()
+
+
+def test_prevision_guided_flow_shows_tf_and_lookback_keyboards(tmp_path):
+    bot = _make_bot(tmp_path)
+
+    captured = {"messages": []}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["messages"].append({"text": text, "reply_markup": reply_markup})
+
+    bot._send = _capture_send
+
+    context = _DummyContext()
+    context.user_data["ui_state"] = "prevision_budget"
+    context.user_data["ui_draft"] = {"symbol": "BTCUSDC"}
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "100"))
+
+    assert context.user_data["ui_state"] == "prevision_tf"
+    tf_markup = captured["messages"][-1]["reply_markup"]
+    tf_labels = [btn.text for row in tf_markup.keyboard for btn in row]
+    assert "15" in tf_labels
+    assert "60" in tf_labels
+    assert "Default" in tf_labels
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "15"))
+
+    assert context.user_data["ui_state"] == "prevision_lookback"
+    lookback_markup = captured["messages"][-1]["reply_markup"]
+    lookback_labels = [btn.text for row in lookback_markup.keyboard for btn in row]
+    assert "30" in lookback_labels
+    assert "60" in lookback_labels
+    assert "90" in lookback_labels
+    assert "120" in lookback_labels
+    assert "180" in lookback_labels
+    assert "240" in lookback_labels
+    assert "Default" in lookback_labels
+
+    bot._storage.close()
