@@ -2510,6 +2510,17 @@ class TelegramTradingBot:
             if state == "simple_post_fill_tp_value":
                 mode = draft.get("post_fill_tp_mode")
                 draft["post_fill_tp"] = self._format_post_fill_value(str(mode), text)
+                self._set_ui_state(context, "simple_post_fill_tp_touch_choice", draft)
+                await self._send(update, "Attivare Touch per TP?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "simple_post_fill_tp_touch_choice":
+                if normalized == "si":
+                    draft["post_fill_tp_touch"] = True
+                elif normalized == "no":
+                    draft["post_fill_tp_touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
                 self._set_ui_state(context, "simple_post_fill_sl_mode", draft)
                 await self._send(update, "Seleziona tipo SL", reply_markup=self._post_fill_mode_keyboard())
                 return True
@@ -2530,7 +2541,24 @@ class TelegramTradingBot:
             if state == "simple_post_fill_sl_value":
                 mode = draft.get("post_fill_sl_mode")
                 sl_text = self._format_post_fill_value(str(mode), text)
-                draft["post_fill_action"] = self._build_post_fill_action_from_guided(draft["post_fill_tp"], sl_text)
+                draft["post_fill_sl"] = sl_text
+                self._set_ui_state(context, "simple_post_fill_sl_touch_choice", draft)
+                await self._send(update, "Attivare Touch per SL?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "simple_post_fill_sl_touch_choice":
+                if normalized == "si":
+                    draft["post_fill_sl_touch"] = True
+                elif normalized == "no":
+                    draft["post_fill_sl_touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
+                draft["post_fill_action"] = self._build_post_fill_action_from_guided(
+                    draft["post_fill_tp"],
+                    draft["post_fill_sl"],
+                    draft.get("post_fill_tp_touch"),
+                    draft.get("post_fill_sl_touch"),
+                )
                 self._set_ui_state(context, "simple_confirm", draft)
                 oco_token = self._post_fill_action_to_token(draft["post_fill_action"])
                 await self._send(
@@ -2737,6 +2765,17 @@ class TelegramTradingBot:
             if state == "function_post_fill_tp_value":
                 mode = draft.get("post_fill_tp_mode")
                 draft["post_fill_tp"] = self._format_post_fill_value(str(mode), text)
+                self._set_ui_state(context, "function_post_fill_tp_touch_choice", draft)
+                await self._send(update, "Attivare Touch per TP?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "function_post_fill_tp_touch_choice":
+                if normalized == "si":
+                    draft["post_fill_tp_touch"] = True
+                elif normalized == "no":
+                    draft["post_fill_tp_touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
                 self._set_ui_state(context, "function_post_fill_sl_mode", draft)
                 await self._send(update, "Seleziona tipo SL", reply_markup=self._post_fill_mode_keyboard())
                 return True
@@ -2757,7 +2796,24 @@ class TelegramTradingBot:
             if state == "function_post_fill_sl_value":
                 mode = draft.get("post_fill_sl_mode")
                 sl_text = self._format_post_fill_value(str(mode), text)
-                draft["post_fill_action"] = self._build_post_fill_action_from_guided(draft["post_fill_tp"], sl_text)
+                draft["post_fill_sl"] = sl_text
+                self._set_ui_state(context, "function_post_fill_sl_touch_choice", draft)
+                await self._send(update, "Attivare Touch per SL?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "function_post_fill_sl_touch_choice":
+                if normalized == "si":
+                    draft["post_fill_sl_touch"] = True
+                elif normalized == "no":
+                    draft["post_fill_sl_touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
+                draft["post_fill_action"] = self._build_post_fill_action_from_guided(
+                    draft["post_fill_tp"],
+                    draft["post_fill_sl"],
+                    draft.get("post_fill_tp_touch"),
+                    draft.get("post_fill_sl_touch"),
+                )
                 self._set_ui_state(context, "function_confirm", draft)
                 oco_token = self._post_fill_action_to_token(draft["post_fill_action"])
                 await self._send(
@@ -3014,6 +3070,17 @@ class TelegramTradingBot:
             if state == "tb_post_fill_tp_value":
                 mode = draft.get("post_fill_tp_mode")
                 draft["post_fill_tp"] = self._format_post_fill_value(str(mode), text)
+                self._set_ui_state(context, "tb_post_fill_tp_touch_choice", draft)
+                await self._send(update, "Attivare Touch per TP?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "tb_post_fill_tp_touch_choice":
+                if normalized == "si":
+                    draft["post_fill_tp_touch"] = True
+                elif normalized == "no":
+                    draft["post_fill_tp_touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
                 self._set_ui_state(context, "tb_post_fill_sl_mode", draft)
                 await self._send(update, "Seleziona tipo SL", reply_markup=self._post_fill_mode_keyboard())
                 return True
@@ -3034,7 +3101,24 @@ class TelegramTradingBot:
             if state == "tb_post_fill_sl_value":
                 mode = draft.get("post_fill_sl_mode")
                 sl_text = self._format_post_fill_value(str(mode), text)
-                draft["post_fill_action"] = self._build_post_fill_action_from_guided(draft["post_fill_tp"], sl_text)
+                draft["post_fill_sl"] = sl_text
+                self._set_ui_state(context, "tb_post_fill_sl_touch_choice", draft)
+                await self._send(update, "Attivare Touch per SL?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "tb_post_fill_sl_touch_choice":
+                if normalized == "si":
+                    draft["post_fill_sl_touch"] = True
+                elif normalized == "no":
+                    draft["post_fill_sl_touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
+                draft["post_fill_action"] = self._build_post_fill_action_from_guided(
+                    draft["post_fill_tp"],
+                    draft["post_fill_sl"],
+                    draft.get("post_fill_tp_touch"),
+                    draft.get("post_fill_sl_touch"),
+                )
                 self._set_ui_state(context, "tb_confirm", draft)
                 oco_token = self._post_fill_action_to_token(draft["post_fill_action"])
                 await self._send(
@@ -3204,27 +3288,40 @@ class TelegramTradingBot:
             if state == "oco_tf":
                 tf = self._parse_tf_choice(text)
                 draft["tf"] = tf
-                self._set_ui_state(context, "oco_touch_choice", draft)
-                await self._send(
-                    update,
-                    "Attivare Touch intrabar? ON: check trigger ogni 60s senza attendere chiusura candela.",
-                    reply_markup=self._yes_no_keyboard(),
-                )
+                draft["oco_leg1_touch"] = None
+                draft["oco_leg2_touch"] = None
+                self._set_ui_state(context, "oco_leg1_touch_choice", draft)
+                await self._send(update, "Leg 1: attivare Touch intrabar?", reply_markup=self._yes_no_keyboard())
                 return True
-            if state == "oco_touch_choice":
+            if state == "oco_leg1_touch_choice":
                 if normalized == "si":
-                    draft["touch"] = True
+                    draft["oco_leg1_touch"] = True
                 elif normalized == "no":
-                    draft["touch"] = False
+                    draft["oco_leg1_touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
+                self._set_ui_state(context, "oco_leg2_touch_choice", draft)
+                await self._send(update, "Leg 2: attivare Touch intrabar?", reply_markup=self._yes_no_keyboard())
+                return True
+            if state == "oco_leg2_touch_choice":
+                if normalized == "si":
+                    draft["oco_leg2_touch"] = True
+                elif normalized == "no":
+                    draft["oco_leg2_touch"] = False
                 else:
                     await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
                     return True
                 tf = draft.get("tf", self._default_tf_minutes)
-                self._set_ui_state(context, "oco_confirm", draft)
                 legs_text = []
-                for l in draft["legs"]:
-                    legs_text.append(str(l))
-                await self._send(update, f"Riepilogo OCO: symbol={draft['symbol']} side={draft['side']} tf={tf} touch={bool(draft.get('touch'))}\nLegs:\n" + "\n".join(legs_text), reply_markup=self._confirm_keyboard())
+                for leg in draft["legs"]:
+                    if int(leg.get("leg_index", 0)) == 1:
+                        leg["touch"] = draft.get("oco_leg1_touch")
+                    elif int(leg.get("leg_index", 0)) == 2:
+                        leg["touch"] = draft.get("oco_leg2_touch")
+                    legs_text.append(str(leg))
+                self._set_ui_state(context, "oco_confirm", draft)
+                await self._send(update, f"Riepilogo OCO: symbol={draft['symbol']} side={draft['side']} tf={tf} leg1_touch={bool(draft.get('oco_leg1_touch'))} leg2_touch={bool(draft.get('oco_leg2_touch'))}\nLegs:\n" + "\n".join(legs_text), reply_markup=self._confirm_keyboard())
                 return True
             if state == "oco_confirm":
                 if normalized != "conferma":
@@ -3235,6 +3332,7 @@ class TelegramTradingBot:
                 chat_id = update.effective_chat.id if update.effective_chat else None
                 legs = draft.get("legs", [])
                 tf = draft.get("tf", self._default_tf_minutes)
+                any_leg_touch = bool(draft.get("oco_leg1_touch", False)) or bool(draft.get("oco_leg2_touch", False))
                 self._storage.save_oco_order(
                     order_id=order_id,
                     chat_id=chat_id,
@@ -3243,11 +3341,11 @@ class TelegramTradingBot:
                     legs=legs,
                     hook_symbol=None,
                     tf_minutes=tf,
-                    next_eval_at=self._touch_next_eval_epoch() if bool(draft.get("touch", False)) else self._next_boundary_epoch(tf),
+                    next_eval_at=self._touch_next_eval_epoch() if any_leg_touch else self._next_boundary_epoch(tf),
                     last_eval_at=None,
                     acquistopulito=bool(draft.get("acquistopulito", False)),
                     btc_alert_liquidate=bool(draft.get("btc_alert_liquidate", False)),
-                    touch=bool(draft.get("touch", False)),
+                    touch=any_leg_touch,
                     status="active",
                 )
                 oco_spec = OcoSpec(
@@ -3258,11 +3356,16 @@ class TelegramTradingBot:
                     chat_id=chat_id,
                     parent_order_id=None,
                     tf_minutes=tf,
-                    next_eval_at=self._touch_next_eval_epoch() if bool(draft.get("touch", False)) else self._next_boundary_epoch(tf),
+                    next_eval_at=self._touch_next_eval_epoch() if any_leg_touch else self._next_boundary_epoch(tf),
                     acquistopulito=bool(draft.get("acquistopulito", False)),
                     btc_alert_liquidate=bool(draft.get("btc_alert_liquidate", False)),
-                    touch=bool(draft.get("touch", False)),
+                    touch=any_leg_touch,
                 )
+                for leg in oco_spec.legs:
+                    if int(leg.get("leg_index", 0)) == 1:
+                        leg["touch"] = draft.get("oco_leg1_touch")
+                    elif int(leg.get("leg_index", 0)) == 2:
+                        leg["touch"] = draft.get("oco_leg2_touch")
                 # keep in-memory record for UI and lifecycle operations
                 if not hasattr(self, "_oco_orders"):
                     self._oco_orders = []

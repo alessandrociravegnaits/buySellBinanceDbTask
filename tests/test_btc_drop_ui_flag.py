@@ -150,6 +150,167 @@ def test_oco_buy_wizard_adds_btc_flag_choice(tmp_path):
     bot._storage.close()
 
 
+def test_oco_wizard_asks_per_leg_touch_flags(tmp_path):
+    bot = _make_bot(tmp_path)
+
+    captured = {"text": ""}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["text"] = text
+
+    bot._send = _capture_send
+
+    context = _DummyContext()
+    context.user_data["ui_state"] = "oco_tf"
+    context.user_data["ui_draft"] = {
+        "symbol": "BTCUSDT",
+        "side": "sell",
+        "legs": [
+            {"leg_index": 1, "ordertype": "limit", "price": 70000.0, "qty": 0.01, "side": "sell"},
+            {"leg_index": 2, "ordertype": "stop_limit", "stop_price": 65000.0, "limit_price": 64950.0, "qty": 0.01, "side": "sell"},
+        ],
+    }
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "15"))
+    assert context.user_data["ui_state"] == "oco_leg1_touch_choice"
+    assert "leg 1" in captured["text"].lower()
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "Si"))
+    assert context.user_data["ui_state"] == "oco_leg2_touch_choice"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "No"))
+    assert context.user_data["ui_state"] == "oco_confirm"
+    assert context.user_data["ui_draft"]["oco_leg1_touch"] is True
+    assert context.user_data["ui_draft"]["oco_leg2_touch"] is False
+    assert "leg1_touch=True" in captured["text"]
+    assert "leg2_touch=False" in captured["text"]
+
+    bot._storage.close()
+
+
+def test_simple_post_fill_wizard_collects_tp_and_sl_touch(tmp_path):
+    bot = _make_bot(tmp_path)
+
+    captured = {"text": ""}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["text"] = text
+
+    bot._send = _capture_send
+
+    context = _DummyContext()
+    context.user_data["ui_state"] = "simple_post_fill_tp_value"
+    context.user_data["ui_draft"] = {
+        "side": "sell",
+        "symbol": "BTCUSDT",
+        "post_fill_tp_mode": "percent",
+    }
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "3"))
+    assert context.user_data["ui_state"] == "simple_post_fill_tp_touch_choice"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "Si"))
+    assert context.user_data["ui_state"] == "simple_post_fill_sl_mode"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "Percentuale %"))
+    assert context.user_data["ui_state"] == "simple_post_fill_sl_value"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "1.2"))
+    assert context.user_data["ui_state"] == "simple_post_fill_sl_touch_choice"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "No"))
+    assert context.user_data["ui_state"] == "simple_confirm"
+    spec = context.user_data["ui_draft"]["post_fill_action"]
+    assert spec["tp_touch"] is True
+    assert spec["sl_touch"] is False
+    assert "tp_touch=true" in captured["text"]
+    assert "sl_touch=false" in captured["text"]
+
+    bot._storage.close()
+
+
+def test_function_post_fill_wizard_collects_tp_and_sl_touch(tmp_path):
+    bot = _make_bot(tmp_path)
+
+    captured = {"text": ""}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["text"] = text
+
+    bot._send = _capture_send
+
+    context = _DummyContext()
+    context.user_data["ui_state"] = "function_post_fill_tp_value"
+    context.user_data["ui_draft"] = {
+        "side": "sell",
+        "symbol": "BTCUSDT",
+        "post_fill_tp_mode": "percent",
+    }
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "3"))
+    assert context.user_data["ui_state"] == "function_post_fill_tp_touch_choice"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "No"))
+    assert context.user_data["ui_state"] == "function_post_fill_sl_mode"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "Trailing %"))
+    assert context.user_data["ui_state"] == "function_post_fill_sl_value"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "1.5"))
+    assert context.user_data["ui_state"] == "function_post_fill_sl_touch_choice"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "Si"))
+    assert context.user_data["ui_state"] == "function_confirm"
+    spec = context.user_data["ui_draft"]["post_fill_action"]
+    assert spec["tp_touch"] is False
+    assert spec["sl_touch"] is True
+    assert "tp_touch=false" in captured["text"]
+    assert "sl_touch=true" in captured["text"]
+
+    bot._storage.close()
+
+
+def test_trailing_post_fill_wizard_collects_tp_and_sl_touch(tmp_path):
+    bot = _make_bot(tmp_path)
+
+    captured = {"text": ""}
+
+    async def _capture_send(update, text, reply_markup=None):
+        captured["text"] = text
+
+    bot._send = _capture_send
+
+    context = _DummyContext()
+    context.user_data["ui_state"] = "tb_post_fill_tp_value"
+    context.user_data["ui_draft"] = {
+        "side": "sell",
+        "symbol": "BTCUSDT",
+        "post_fill_tp_mode": "fixed",
+    }
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "72000"))
+    assert context.user_data["ui_state"] == "tb_post_fill_tp_touch_choice"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "Si"))
+    assert context.user_data["ui_state"] == "tb_post_fill_sl_mode"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "Valore fisso"))
+    assert context.user_data["ui_state"] == "tb_post_fill_sl_value"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "69000"))
+    assert context.user_data["ui_state"] == "tb_post_fill_sl_touch_choice"
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "No"))
+    assert context.user_data["ui_state"] == "tb_confirm"
+    spec = context.user_data["ui_draft"]["post_fill_action"]
+    assert spec["tp_touch"] is True
+    assert spec["sl_touch"] is False
+    assert "tp_touch=true" in captured["text"]
+    assert "sl_touch=false" in captured["text"]
+
+    bot._storage.close()
+
+
 def test_buy_simple_guided_flow_can_switch_to_market_before_trigger(tmp_path):
     bot = _make_bot(tmp_path)
     bot._validate_spot_symbol = lambda symbol, field_name="SYMBOL": (True, "")
