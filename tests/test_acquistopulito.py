@@ -64,6 +64,7 @@ def test_storage_persists_acquistopulito_for_buy_and_oco(tmp_path):
         next_eval_at=None,
         last_eval_at=None,
         acquistopulito=True,
+        touch=True,
         status="active",
     )
 
@@ -79,6 +80,7 @@ def test_storage_persists_acquistopulito_for_buy_and_oco(tmp_path):
         next_eval_at=None,
         last_eval_at=None,
         acquistopulito=True,
+        touch=True,
         status="active",
     )
 
@@ -88,6 +90,8 @@ def test_storage_persists_acquistopulito_for_buy_and_oco(tmp_path):
 
     assert int(buy["acquistopulito"]) == 1
     assert int(oco["acquistopulito"]) == 1
+    assert int(buy["touch"]) == 1
+    assert int(oco["touch"]) == 1
 
     storage.close()
 
@@ -100,6 +104,16 @@ def test_extract_acquistopulito_token_parser():
     parts, value = TelegramTradingBot._extract_acquistopulito(["/b", "BTCUSDT", ">", "1", "0.1", "acquistopulito=false"])
     assert value is False
     assert all("acquistopulito" not in token for token in parts)
+
+
+def test_extract_touch_token_parser():
+    parts, value = TelegramTradingBot._extract_touch(["/b", "BTCUSDT", ">", "1", "0.1", "touch"])
+    assert value is True
+    assert "touch" not in parts
+
+    parts, value = TelegramTradingBot._extract_touch(["/b", "BTCUSDT", ">", "1", "0.1", "touch=false"])
+    assert value is False
+    assert all("touch" not in token for token in parts)
 
 
 def test_cmd_buy_sets_acquistopulito(tmp_path):
@@ -119,6 +133,29 @@ def test_cmd_buy_sets_acquistopulito(tmp_path):
     conn = sqlite3.connect(bot._storage._db_path)
     cur = conn.cursor()
     cur.execute("SELECT acquistopulito FROM order_simple WHERE order_id = ?", (bot._buy_orders[0].order_id,))
+    row = cur.fetchone()
+    assert row is not None and int(row[0]) == 1
+    conn.close()
+    bot._storage.close()
+
+
+def test_cmd_buy_sets_touch(tmp_path):
+    bot = _make_bot(tmp_path)
+    bot._validate_spot_symbol = lambda symbol, field_name="SYMBOL": (True, "")
+
+    async def _noop_send(update, text, reply_markup=None):
+        return None
+
+    bot._send = _noop_send
+
+    asyncio.run(bot._cmd_simple(_DummyUpdate(), ["/b", "BTCUSDT", ">", "1", "0.1", "touch"], side="buy"))
+
+    assert len(bot._buy_orders) == 1
+    assert bot._buy_orders[0].touch is True
+
+    conn = sqlite3.connect(bot._storage._db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT touch FROM orders WHERE order_id = ?", (bot._buy_orders[0].order_id,))
     row = cur.fetchone()
     assert row is not None and int(row[0]) == 1
     conn.close()

@@ -411,6 +411,75 @@ def test_trailing_sell_renews_next_eval_at_on_each_due_tick(tmp_path):
     bot._storage.close()
 
 
+def test_trailing_sell_touch_renews_next_eval_every_60s(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    bot._exchange_client = FakeExchangeClient()
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    now_ts = 1713030000
+
+    spec = TrailingSellSpec(
+        order_id=1201,
+        symbol="BTCUSDT",
+        qty=1.0,
+        percent=1.5,
+        chat_id=999,
+        limit=None,
+        hook_symbol=None,
+        armed=True,
+        max_price=100.0,
+        arm_op=None,
+        tf_minutes=15,
+        next_eval_at=0,
+        last_eval_at=None,
+        status="active",
+        touch=True,
+    )
+    bot._trailing_sell_orders = [spec]
+    bot._storage.save_trailing_order(
+        order_id=spec.order_id,
+        chat_id=spec.chat_id,
+        side="sell",
+        symbol=spec.symbol,
+        qty=spec.qty,
+        percent=spec.percent,
+        limit_price=spec.limit,
+        hook_symbol=spec.hook_symbol,
+        armed=spec.armed,
+        max_price=spec.max_price,
+        min_price=None,
+        arm_op=spec.arm_op,
+        tf_minutes=spec.tf_minutes,
+        next_eval_at=spec.next_eval_at,
+        last_eval_at=spec.last_eval_at,
+        touch=spec.touch,
+        status=spec.status,
+    )
+
+    mock_feed.set_price(100.5)
+    bot._eval_trailing_sell(now_ts)
+
+    assert spec.status == "active"
+    assert spec.last_eval_at == now_ts
+    assert spec.next_eval_at == now_ts + 60
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT next_eval_at, last_eval_at FROM orders WHERE order_id = ?", (spec.order_id,))
+    next_eval_at, last_eval_at = cur.fetchone()
+    assert next_eval_at == now_ts + 60
+    assert last_eval_at == now_ts
+    conn.close()
+    bot._storage.close()
+
+
 def test_simple_orders_sync_next_eval_for_buy_and_sell(tmp_path):
     db_path = str(tmp_path / "test_bot.sqlite3")
     archive_dir = str(tmp_path / "archive")
@@ -511,6 +580,40 @@ def test_simple_orders_sync_next_eval_for_buy_and_sell(tmp_path):
     bot._storage.close()
 
 
+def test_simple_touch_order_uses_minute_eval_tf(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    bot._exchange_client = FakeExchangeClient()
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    spec = SimpleOrderSpec(
+        order_id=1303,
+        side="buy",
+        symbol="BTCUSDT",
+        op="<",
+        trigger=50.0,
+        qty=0.1,
+        chat_id=999,
+        tf_minutes=15,
+        next_eval_at=0,
+        status="active",
+        touch=True,
+    )
+    bot._attach_simple_to_engine(spec)
+
+    core_order = bot._manager.get_order(spec.core_order_id)
+    assert core_order is not None
+    assert core_order.tf_minutes == 1
+
+    bot._storage.close()
+
+
 def test_auto_oco_independent_modes_tp_trailing_sl_percent(tmp_path):
     db_path = str(tmp_path / "test_bot.sqlite3")
     archive_dir = str(tmp_path / "archive")
@@ -572,6 +675,59 @@ def test_auto_oco_independent_modes_tp_trailing_sl_percent(tmp_path):
     sl_status = cur.fetchone()[0]
     assert tp_status == "cancelled"
     assert sl_status == "filled"
+    conn.close()
+    bot._storage.close()
+
+
+def test_auto_oco_can_use_tp_touch_with_sl_classic(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path=db_path)
+    bot._exchange_client = FakeExchangeClient()
+    mock_feed = MockPriceFeed(initial_price=100.0)
+    bot._feed = mock_feed
+    from core import build_engine
+    bot._manager, bot._poller = build_engine(symbols=["BTCUSDT"], price_feed=mock_feed)
+
+    bot._create_auto_oco_from_post_fill(
+        parent_order_id=7000,
+        chat_id=999,
+        symbol="BTCUSDT",
+        hook_symbol=None,
+        side="buy",
+        qty=1.0,
+        tf_minutes=15,
+        fill_price=100.0,
+        spec={
+            "type": "oco",
+            "tp": {"mode": "percent", "value": 2.0},
+            "sl": {"mode": "percent", "value": 1.0},
+            "tp_touch": True,
+            "sl_touch": False,
+        },
+        touch=False,
+    )
+
+    assert len(bot._oco_orders) == 1
+    oco = bot._oco_orders[0]
+    tp_leg = next(l for l in oco.legs if int(l.get("leg_index")) == 1)
+    sl_leg = next(l for l in oco.legs if int(l.get("leg_index")) == 2)
+
+    assert bool(tp_leg.get("touch")) is True
+    assert bool(sl_leg.get("touch")) is False
+
+    tp_core = bot._manager.get_order(int(tp_leg.get("core_order_id")))
+    sl_core = bot._manager.get_order(int(sl_leg.get("core_order_id")))
+    assert tp_core is not None and tp_core.tf_minutes == 1
+    assert sl_core is not None and sl_core.tf_minutes == 15
+
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT leg_index, touch FROM order_oco_leg WHERE order_id = ? ORDER BY leg_index", (oco.order_id,))
+    rows = cur.fetchall()
+    assert rows == [(1, 1), (2, 0)]
     conn.close()
     bot._storage.close()
 

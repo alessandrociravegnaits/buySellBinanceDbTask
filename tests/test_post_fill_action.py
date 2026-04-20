@@ -25,6 +25,40 @@ def test_parse_post_fill_oco_spec_tp_trailing_enabled():
     bot._storage.close()
 
 
+def test_parse_post_fill_oco_spec_with_leg_touch_flags():
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path="data/test_bot.sqlite3")
+    spec = bot._parse_post_fill_oco_spec("oco:tp=3%,sl=1.2%,tp_touch=true,sl_touch=false")
+    assert spec["tp_touch"] is True
+    assert spec["sl_touch"] is False
+    bot._storage.close()
+
+
+def test_parse_post_fill_oco_spec_with_invalid_leg_touch_flag_raises():
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path="data/test_bot.sqlite3")
+    try:
+        bot._parse_post_fill_oco_spec("oco:tp=3%,sl=1.2%,tp_touch=forse")
+        assert False, "Expected ValueError for invalid tp_touch"
+    except ValueError as exc:
+        assert "tp_touch" in str(exc)
+    finally:
+        bot._storage.close()
+
+
+def test_post_fill_action_token_includes_leg_touch_flags():
+    bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path="data/test_bot.sqlite3")
+    token = bot._post_fill_action_to_token(
+        {
+            "type": "oco",
+            "tp": {"mode": "percent", "value": 3.0},
+            "sl": {"mode": "trailing", "value": 1.5},
+            "tp_touch": True,
+            "sl_touch": False,
+        }
+    )
+    assert token == "oco:tp=3.0%,sl=trail:1.5%,tp_touch=true,sl_touch=false"
+    bot._storage.close()
+
+
 def test_extract_post_fill_action_duplicate_raises():
     bot = TelegramTradingBot(token="x", authorized_chat_id=None, db_path="data/test_bot.sqlite3")
     parts = ["/b", "BTCUSDT", "<", "67000", "0.001", "oco:tp=3%,sl=1.5%", "oco:tp=2%,sl=1%"]

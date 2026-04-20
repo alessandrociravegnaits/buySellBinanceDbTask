@@ -209,11 +209,13 @@ Esempi comando:
 /b BTCUSDT < 67000 0.001 oco:tp=3%,sl=1.5%
 /b BTCUSDT < 67000 0.001 oco:tp=72000,sl=65000
 /b BTCUSDT < 67000 0.001 oco:tp=3%,sl=trail:1.5%
+/b BTCUSDT < 67000 0.001 oco:tp=3%,sl=1.5%,tp_touch=true,sl_touch=false
 ```
 
 Formato supportato:
 - `tp`: `%`, valore fisso, oppure `trail:x%`
 - `sl`: `%`, valore fisso, oppure `trail:x%`
+- opzionale per-leg: `tp_touch=true|false`, `sl_touch=true|false` (override del touch globale ordine)
 
 Le due gambe sono indipendenti: puoi scegliere liberamente il mode per ciascuna leg.
 

@@ -85,6 +85,7 @@ class SimpleOrderSpec:
     acquistopulito: bool = False
     btc_alert_liquidate: bool = False
     status: str = "active"
+    touch: bool = False
 
 
 @dataclass
@@ -107,6 +108,7 @@ class TrailingSellSpec:
     oco_parent_order_id: Optional[int] = None
     oco_leg_index: Optional[int] = None
     status: str = "active"
+    touch: bool = False
 
 
 @dataclass
@@ -127,6 +129,7 @@ class TrailingBuySpec:
     acquistopulito: bool = False
     btc_alert_liquidate: bool = False
     status: str = "active"
+    touch: bool = False
 
 
 @dataclass
@@ -148,6 +151,7 @@ class FunctionSpec:
     acquistopulito: bool = False
     btc_alert_liquidate: bool = False
     status: str = "active"
+    touch: bool = False
 
 
 @dataclass
@@ -164,6 +168,7 @@ class OcoSpec:
     acquistopulito: bool = False
     btc_alert_liquidate: bool = False
     status: str = "active"
+    touch: bool = False
 
 
 class TelegramTradingBot:
@@ -487,6 +492,7 @@ class TelegramTradingBot:
 
     def _restore_active_orders(self):
         data = self._storage.load_active_orders()
+        now_i = int(time.time())
 
         for row in data["simple"]:
             spec = SimpleOrderSpec(
@@ -506,9 +512,11 @@ class TelegramTradingBot:
                 acquistopulito=bool(row.get("acquistopulito", 0)),
                 btc_alert_liquidate=bool(row.get("btc_alert_liquidate", 0)),
                 status=row["status"],
+                touch=bool(row.get("touch", 0)),
             )
-            spec.next_eval_at = self._next_boundary_epoch(spec.tf_minutes)
-            self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, None)
+            spec.last_eval_at = now_i if spec.touch else None
+            spec.next_eval_at = self._touch_next_eval_epoch(now_i) if spec.touch else self._next_boundary_epoch(spec.tf_minutes)
+            self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, spec.last_eval_at)
             self._attach_simple_to_engine(spec)
             if spec.side == "sell":
                 self._sell_orders.append(spec)
@@ -534,9 +542,13 @@ class TelegramTradingBot:
                     acquistopulito=bool(row.get("acquistopulito", 0)),
                     btc_alert_liquidate=bool(row.get("btc_alert_liquidate", 0)),
                     status=row["status"],
+                    touch=bool(row.get("touch", 0)),
                 )
             self._function_orders.append(spec)
-            self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, None)
+            if spec.touch:
+                spec.last_eval_at = now_i
+                spec.next_eval_at = self._touch_next_eval_epoch(now_i)
+            self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, spec.last_eval_at)
 
         for row in data["trailing"]:
             if row["side"] == "sell":
@@ -559,9 +571,13 @@ class TelegramTradingBot:
                         oco_parent_order_id=row.get("oco_parent_order_id"),
                         oco_leg_index=row.get("oco_leg_index"),
                         status=row["status"],
+                        touch=bool(row.get("touch", 0)),
                     )
                 self._trailing_sell_orders.append(spec)
-                self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, None)
+                if spec.touch:
+                    spec.last_eval_at = now_i
+                    spec.next_eval_at = self._touch_next_eval_epoch(now_i)
+                self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, spec.last_eval_at)
             else:
                 spec = TrailingBuySpec(
                         order_id=row["order_id"],
@@ -580,9 +596,13 @@ class TelegramTradingBot:
                         acquistopulito=bool(row.get("acquistopulito", 0)),
                         btc_alert_liquidate=bool(row.get("btc_alert_liquidate", 0)),
                         status=row["status"],
+                        touch=bool(row.get("touch", 0)),
                     )
                 self._trailing_buy_orders.append(spec)
-                self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, None)
+                if spec.touch:
+                    spec.last_eval_at = now_i
+                    spec.next_eval_at = self._touch_next_eval_epoch(now_i)
+                self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, spec.last_eval_at)
 
         # restore OCO orders
         self._oco_orders: List[OcoSpec] = []
@@ -600,9 +620,13 @@ class TelegramTradingBot:
                 acquistopulito=bool(row.get("acquistopulito", 0)),
                 btc_alert_liquidate=bool(row.get("btc_alert_liquidate", 0)),
                 status=row["status"],
+                touch=bool(row.get("touch", 0)),
             )
             self._oco_orders.append(spec)
-            self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, None)
+            if spec.touch:
+                spec.last_eval_at = now_i
+                spec.next_eval_at = self._touch_next_eval_epoch(now_i)
+            self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, spec.last_eval_at)
             # attach to engine
             self._attach_oco_to_engine(spec)
 
@@ -611,6 +635,25 @@ class TelegramTradingBot:
         now = int(now_ts if now_ts is not None else time.time())
         tf_seconds = int(tf_minutes) * 60
         return (now // tf_seconds + 1) * tf_seconds
+
+    @staticmethod
+    def _touch_next_eval_epoch(now_ts: Optional[int] = None) -> int:
+        now = int(now_ts if now_ts is not None else time.time())
+        return now + 60
+
+    @staticmethod
+    def _price_tf_for_eval(tf_minutes: int, touch: bool) -> int:
+        return 1 if touch else tf_minutes
+
+    @staticmethod
+    def _resolve_oco_leg_touch(default_touch: bool, leg: Dict[str, Any]) -> bool:
+        value = leg.get("touch")
+        if value is None:
+            return bool(default_touch)
+        try:
+            return TelegramTradingBot._parse_bool_like(value)
+        except Exception:
+            return bool(value)
 
     def _extract_tf(self, parts: List[str]) -> Tuple[List[str], int]:
         tf_minutes = self._default_tf_minutes
@@ -691,6 +734,37 @@ class TelegramTradingBot:
         return filtered, bool(value)
 
     @staticmethod
+    def _extract_touch(parts: List[str]) -> Tuple[List[str], bool]:
+        """Extract optional touch flag from command tokens.
+
+        Supported tokens:
+        - touch
+        - touch=true|false|1|0|si|no
+        """
+        filtered: List[str] = []
+        value: Optional[bool] = None
+        for token in parts:
+            lower = token.lower()
+            if lower == "touch":
+                if value is not None:
+                    raise ValueError("Flag touch duplicato")
+                value = True
+                continue
+            if lower.startswith("touch="):
+                if value is not None:
+                    raise ValueError("Flag touch duplicato")
+                raw = lower.split("=", 1)[1].strip()
+                if raw in {"1", "true", "si", "yes", "on"}:
+                    value = True
+                elif raw in {"0", "false", "no", "off"}:
+                    value = False
+                else:
+                    raise ValueError("Valore touch non valido: usa true/false")
+                continue
+            filtered.append(token)
+        return filtered, bool(value)
+
+    @staticmethod
     def _decode_post_fill_action(raw: Any) -> Optional[Dict[str, Any]]:
         if not raw:
             return None
@@ -736,11 +810,18 @@ class TelegramTradingBot:
             fields[k.strip().lower()] = v.strip()
         if "tp" not in fields or "sl" not in fields:
             raise ValueError("Spec OCO richiede tp=... e sl=...")
-        return {
+        spec: Dict[str, Any] = {
             "type": "oco",
             "tp": self._parse_action_mode(fields["tp"], allow_trailing=True),
             "sl": self._parse_action_mode(fields["sl"], allow_trailing=True),
         }
+        for leg_key in ("tp_touch", "sl_touch"):
+            if leg_key in fields:
+                try:
+                    spec[leg_key] = self._parse_bool_like(fields[leg_key])
+                except Exception as exc:
+                    raise ValueError(f"Valore {leg_key} non valido: usa true/false") from exc
+        return spec
 
     def _extract_post_fill_action(self, parts: List[str]) -> Tuple[List[str], Optional[Dict[str, Any]]]:
         filtered: List[str] = []
@@ -769,14 +850,39 @@ class TelegramTradingBot:
         sl = spec.get("sl") or {}
         tp_token = self._mode_to_user_token(str(tp.get("mode")), tp.get("value"))
         sl_token = self._mode_to_user_token(str(sl.get("mode")), sl.get("value"))
-        return f"oco:tp={tp_token},sl={sl_token}"
+        parts = [f"tp={tp_token}", f"sl={sl_token}"]
 
-    def _build_post_fill_action_from_guided(self, tp_text: str, sl_text: str) -> Dict[str, Any]:
-        return {
+        tp_touch = spec.get("tp_touch")
+        if tp_touch is None and isinstance(tp, dict):
+            tp_touch = tp.get("touch")
+        if tp_touch is not None:
+            parts.append(f"tp_touch={'true' if self._parse_bool_like(tp_touch) else 'false'}")
+
+        sl_touch = spec.get("sl_touch")
+        if sl_touch is None and isinstance(sl, dict):
+            sl_touch = sl.get("touch")
+        if sl_touch is not None:
+            parts.append(f"sl_touch={'true' if self._parse_bool_like(sl_touch) else 'false'}")
+
+        return "oco:" + ",".join(parts)
+
+    def _build_post_fill_action_from_guided(
+        self,
+        tp_text: str,
+        sl_text: str,
+        tp_touch: Optional[bool] = None,
+        sl_touch: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        spec: Dict[str, Any] = {
             "type": "oco",
             "tp": self._parse_action_mode(tp_text, allow_trailing=True),
             "sl": self._parse_action_mode(sl_text, allow_trailing=True),
         }
+        if tp_touch is not None:
+            spec["tp_touch"] = bool(tp_touch)
+        if sl_touch is not None:
+            spec["sl_touch"] = bool(sl_touch)
+        return spec
 
     def _new_order_id(self) -> int:
         return self._storage.next_order_id()
@@ -1179,6 +1285,19 @@ class TelegramTradingBot:
             return fill_price * (1.0 + value / 100.0) if kind == "tp" else fill_price * (1.0 - value / 100.0)
         return fill_price * (1.0 - value / 100.0) if kind == "tp" else fill_price * (1.0 + value / 100.0)
 
+    def _resolve_post_fill_leg_touch(self, spec: Dict[str, Any], leg_key: str, default_touch: bool) -> bool:
+        value = spec.get(f"{leg_key}_touch")
+        if value is None:
+            leg_cfg = spec.get(leg_key)
+            if isinstance(leg_cfg, dict):
+                value = leg_cfg.get("touch")
+        if value is None:
+            return bool(default_touch)
+        try:
+            return self._parse_bool_like(value)
+        except Exception:
+            return bool(value)
+
     def _create_auto_oco_from_post_fill(
         self,
         parent_order_id: int,
@@ -1190,6 +1309,7 @@ class TelegramTradingBot:
         tf_minutes: int,
         fill_price: float,
         spec: Dict[str, Any],
+        touch: bool = False,
     ):
         if side != "buy":
             raise ValueError("Auto OCO supportato solo per ordini di ingresso buy")
@@ -1202,10 +1322,12 @@ class TelegramTradingBot:
         sl_mode = sl_cfg.get("mode")
         tp_value = float(tp_cfg.get("value"))
         sl_value = float(sl_cfg.get("value"))
+        tp_touch = self._resolve_post_fill_leg_touch(spec, "tp", touch)
+        sl_touch = self._resolve_post_fill_leg_touch(spec, "sl", touch)
 
         exec_symbol = self._exec_symbol(symbol, hook_symbol)
 
-        def build_leg(kind: str, leg_index: int, mode: str, value: float) -> Dict[str, Any]:
+        def build_leg(kind: str, leg_index: int, mode: str, value: float, leg_touch: bool) -> Dict[str, Any]:
             if mode == "trailing":
                 return {
                     "leg_index": leg_index,
@@ -1213,6 +1335,7 @@ class TelegramTradingBot:
                     "trail_percent": value,
                     "qty": qty,
                     "side": "sell",
+                    "touch": leg_touch,
                     "status": "waiting",
                 }
 
@@ -1229,6 +1352,7 @@ class TelegramTradingBot:
                     "price": target_price,
                     "qty": qty,
                     "side": "sell",
+                    "touch": leg_touch,
                     "status": "waiting",
                 }
             return {
@@ -1238,12 +1362,13 @@ class TelegramTradingBot:
                 "limit_price": target_price,
                 "qty": qty,
                 "side": "sell",
+                "touch": leg_touch,
                 "status": "waiting",
             }
 
         legs: List[Dict[str, Any]] = [
-            build_leg("tp", 1, str(tp_mode), tp_value),
-            build_leg("sl", 2, str(sl_mode), sl_value),
+            build_leg("tp", 1, str(tp_mode), tp_value, tp_touch),
+            build_leg("sl", 2, str(sl_mode), sl_value, sl_touch),
         ]
 
         oco_id = self._new_order_id()
@@ -1255,9 +1380,10 @@ class TelegramTradingBot:
             chat_id=chat_id,
             parent_order_id=parent_order_id,
             tf_minutes=tf_minutes,
-            next_eval_at=self._next_boundary_epoch(tf_minutes),
+            next_eval_at=self._touch_next_eval_epoch() if touch else self._next_boundary_epoch(tf_minutes),
             acquistopulito=False,
             status="active",
+            touch=touch,
         )
         self._storage.save_oco_order(
             order_id=oco_spec.order_id,
@@ -1271,6 +1397,7 @@ class TelegramTradingBot:
             last_eval_at=oco_spec.last_eval_at,
             parent_order_id=parent_order_id,
             acquistopulito=False,
+            touch=oco_spec.touch,
             status=oco_spec.status,
         )
         self._attach_oco_to_engine(oco_spec)
@@ -1284,8 +1411,11 @@ class TelegramTradingBot:
                 "fill_price": fill_price,
                 "tp_mode": tp_mode,
                 "tp_value": tp_value,
+                "tp_touch": tp_touch,
                 "sl_mode": sl_mode,
                 "sl_value": sl_value,
+                "sl_touch": sl_touch,
+                "touch": touch,
             },
         )
         self._queue_message(chat_id, f"Auto OCO creato da ordine {parent_order_id}: oco_id={oco_id} su {exec_symbol}")
@@ -1301,6 +1431,7 @@ class TelegramTradingBot:
         tf_minutes: int,
         fill_price: float,
         post_fill_action: Optional[Dict[str, Any]],
+        touch: bool = False,
     ):
         if not post_fill_action:
             return
@@ -1315,6 +1446,7 @@ class TelegramTradingBot:
                 tf_minutes=tf_minutes,
                 fill_price=fill_price,
                 spec=post_fill_action,
+                touch=touch,
             )
             self._storage.append_event("post_fill_action_triggered", parent_order_id, {"action": post_fill_action})
         except Exception as exc:
@@ -1479,13 +1611,15 @@ class TelegramTradingBot:
             return False
 
     def _rearm_simple_order_after_clean_block(self, spec: SimpleOrderSpec):
-        spec.next_eval_at = self._next_boundary_epoch(spec.tf_minutes)
+        spec.next_eval_at = self._touch_next_eval_epoch() if spec.touch else self._next_boundary_epoch(spec.tf_minutes)
         self._attach_simple_to_engine(spec)
         self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, spec.last_eval_at)
 
     def _rearm_oco_leg_after_clean_block(self, oco_spec: OcoSpec, leg_spec: Dict[str, Any]):
         leg_index = int(leg_spec.get("leg_index"))
         core_id = int(leg_spec.get("core_order_id") or -(oco_spec.order_id * 10 + leg_index))
+        leg_touch = self._resolve_oco_leg_touch(oco_spec.touch, leg_spec)
+        leg_spec["touch"] = leg_touch
 
         side = (leg_spec.get("side") or oco_spec.side).lower()
         ordertype = leg_spec.get("ordertype")
@@ -1510,14 +1644,16 @@ class TelegramTradingBot:
             description=f"OCO {oco_spec.order_id} leg{leg_index}",
             execute=lambda p, o_id=oco_spec.order_id, l_idx=leg_index, l_spec=leg_spec: self._on_oco_leg_fired(o_id, l_idx, l_spec, p),
         )
+        eval_tf = self._price_tf_for_eval(oco_spec.tf_minutes, leg_touch)
+        next_eval = self._touch_next_eval_epoch() if leg_touch else self._next_boundary_epoch(oco_spec.tf_minutes)
         order_obj = Order(
             id=core_id,
             symbol=oco_spec.symbol,
             triggers=[trigger],
             action=action,
             behavior=OrderBehavior.CANCEL_ON_FIRE,
-            tf_minutes=oco_spec.tf_minutes,
-            next_eval_at=float(self._next_boundary_epoch(oco_spec.tf_minutes)),
+            tf_minutes=eval_tf,
+            next_eval_at=float(next_eval),
             last_eval_at=float(time.time()),
         )
         self._manager.add_order(order_obj)
@@ -1549,6 +1685,7 @@ class TelegramTradingBot:
         )
         trigger = self._build_trigger(0, spec.op, spec.trigger)
         core_order_id = spec.core_order_id or spec.order_id
+        eval_tf = self._price_tf_for_eval(spec.tf_minutes, spec.touch)
 
         self._manager.add_order(
             Order(
@@ -1557,7 +1694,7 @@ class TelegramTradingBot:
                 triggers=[trigger],
                 action=action,
                 behavior=OrderBehavior.CANCEL_ON_FIRE,
-                tf_minutes=spec.tf_minutes,
+                tf_minutes=eval_tf,
                 next_eval_at=float(spec.next_eval_at) if spec.next_eval_at is not None else None,
                 last_eval_at=float(spec.last_eval_at) if spec.last_eval_at is not None else None,
             )
@@ -1573,6 +1710,8 @@ class TelegramTradingBot:
         for leg in spec.legs:
             leg_index = int(leg.get("leg_index"))
             ordertype = leg.get("ordertype")
+            leg_touch = self._resolve_oco_leg_touch(spec.touch, leg)
+            leg["touch"] = leg_touch
 
             if ordertype == "trailing":
                 trail_percent = float(leg.get("trail_percent") or 0.0)
@@ -1619,9 +1758,10 @@ class TelegramTradingBot:
                     limit=None,
                     hook_symbol=None,
                     tf_minutes=spec.tf_minutes,
-                    next_eval_at=self._next_boundary_epoch(spec.tf_minutes),
+                    next_eval_at=self._touch_next_eval_epoch() if leg_touch else self._next_boundary_epoch(spec.tf_minutes),
                     oco_parent_order_id=spec.order_id,
                     oco_leg_index=leg_index,
+                    touch=leg_touch,
                 )
                 self._init_trailing_sell(trailing_spec)
                 self._trailing_sell_orders.append(trailing_spec)
@@ -1644,6 +1784,7 @@ class TelegramTradingBot:
                     post_fill_action=None,
                     oco_parent_order_id=trailing_spec.oco_parent_order_id,
                     oco_leg_index=trailing_spec.oco_leg_index,
+                    touch=trailing_spec.touch,
                     status=trailing_spec.status,
                 )
                 leg["core_order_id"] = trailing_order_id
@@ -1691,14 +1832,16 @@ class TelegramTradingBot:
 
             action = make_action(spec.order_id, leg_index, leg)
 
+            next_eval_at = self._touch_next_eval_epoch() if leg_touch else self._next_boundary_epoch(spec.tf_minutes)
+
             order_obj = Order(
                 id=core_id,
                 symbol=spec.symbol,
                 triggers=[trigger],
                 action=action,
                 behavior=OrderBehavior.CANCEL_ON_FIRE,
-                tf_minutes=spec.tf_minutes,
-                next_eval_at=float(spec.next_eval_at) if spec.next_eval_at is not None else None,
+                tf_minutes=self._price_tf_for_eval(spec.tf_minutes, leg_touch),
+                next_eval_at=float(next_eval_at),
                 last_eval_at=float(spec.last_eval_at) if spec.last_eval_at is not None else None,
             )
 
@@ -1871,6 +2014,7 @@ class TelegramTradingBot:
                     tf_minutes=spec.tf_minutes,
                     fill_price=price,
                     post_fill_action=spec.post_fill_action,
+                    touch=spec.touch,
                 )
         except (self._binance_api_error_cls, self._binance_request_error_cls, self._binance_order_error_cls) as exc:
             spec.status = "error"
@@ -1914,6 +2058,7 @@ class TelegramTradingBot:
             "/f SYMBOL <|> TRIGGER QTY PERCENT [@PAIRHOOK] [tf=MIN] - buy poi trailing sell\n"
             "/S SYMBOL PERCENT QTY [LIMIT] [@PAIRHOOK] [tf=MIN] - trailing sell\n"
             "/B SYMBOL PERCENT QTY LIMIT [tf=MIN] - trailing buy\n"
+            "  post-fill OCO opzionale: oco:tp=...,sl=...[,tp_touch=true|false,sl_touch=true|false]\n"
             "/prevision SYMBOL [BUDGET] [TF] [LOOKBACK] - genera comando trailing buy\n"
             "/sr SYMBOL [TF] [AMPIEZZA_PCT] - supporti/resistenze vicini al prezzo attuale\n"
             "/t MINUTI - default tf nuovi ordini (1,5,15,30,60,120,240,1440)\n"
@@ -2283,6 +2428,21 @@ class TelegramTradingBot:
             if state == "simple_tf":
                 tf = self._parse_tf_choice(text)
                 draft["tf"] = tf
+                self._set_ui_state(context, "simple_touch_choice", draft)
+                await self._send(
+                    update,
+                    "Attivare Touch intrabar? ON: check trigger ogni 60s senza attendere chiusura candela.",
+                    reply_markup=self._yes_no_keyboard(),
+                )
+                return True
+            if state == "simple_touch_choice":
+                if normalized == "si":
+                    draft["touch"] = True
+                elif normalized == "no":
+                    draft["touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
                 self._set_ui_state(context, "simple_btc_liq_choice", draft)
                 await self._send(update, "Attivare protezione BTC drop per questo ordine?", reply_markup=self._yes_no_keyboard())
                 return True
@@ -2405,6 +2565,8 @@ class TelegramTradingBot:
                     parts.append("acquistopulito")
                 if draft.get("btc_alert_liquidate"):
                     parts.append("btc_alert=1")
+                if draft.get("touch"):
+                    parts.append("touch")
                 if draft.get("post_fill_action"):
                     parts.append(self._post_fill_action_to_token(draft["post_fill_action"]))
                 await self._cmd_simple(update, parts, side=draft["side"], market=bool(draft.get("market")))
@@ -2504,6 +2666,21 @@ class TelegramTradingBot:
                 return True
             if state == "function_tf":
                 draft["tf"] = self._parse_tf_choice(text)
+                self._set_ui_state(context, "function_touch_choice", draft)
+                await self._send(
+                    update,
+                    "Attivare Touch intrabar? ON: check trigger ogni 60s senza attendere chiusura candela.",
+                    reply_markup=self._yes_no_keyboard(),
+                )
+                return True
+            if state == "function_touch_choice":
+                if normalized == "si":
+                    draft["touch"] = True
+                elif normalized == "no":
+                    draft["touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
                 self._set_ui_state(context, "function_btc_liq_choice", draft)
                 await self._send(update, "Attivare protezione BTC drop per questo FUNCTION buy?", reply_markup=self._yes_no_keyboard())
                 return True
@@ -2609,6 +2786,8 @@ class TelegramTradingBot:
                     parts.append("acquistopulito")
                 if draft.get("btc_alert_liquidate"):
                     parts.append("btc_alert=1")
+                if draft.get("touch"):
+                    parts.append("touch")
                 if draft.get("post_fill_action"):
                     parts.append(self._post_fill_action_to_token(draft["post_fill_action"]))
                 await self._cmd_f(update, parts)
@@ -2677,6 +2856,21 @@ class TelegramTradingBot:
                 return True
             if state == "ts_tf":
                 draft["tf"] = self._parse_tf_choice(text)
+                self._set_ui_state(context, "ts_touch_choice", draft)
+                await self._send(
+                    update,
+                    "Attivare Touch intrabar? ON: check trigger ogni 60s senza attendere chiusura candela.",
+                    reply_markup=self._yes_no_keyboard(),
+                )
+                return True
+            if state == "ts_touch_choice":
+                if normalized == "si":
+                    draft["touch"] = True
+                elif normalized == "no":
+                    draft["touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
                 self._set_ui_state(context, "ts_btc_liq_choice", draft)
                 await self._send(update, "Attivare protezione BTC drop per questo TRAILING SELL?", reply_markup=self._yes_no_keyboard())
                 return True
@@ -2703,6 +2897,8 @@ class TelegramTradingBot:
                 parts.append(f"tf={draft['tf']}")
                 if draft.get("btc_alert_liquidate"):
                     parts.append("btc_alert=1")
+                if draft.get("touch"):
+                    parts.append("touch")
                 await self._cmd_S(update, parts)
                 self._clear_ui_state(context)
                 await self._show_orders_menu(update)
@@ -2747,6 +2943,21 @@ class TelegramTradingBot:
                 return True
             if state == "tb_tf":
                 draft["tf"] = self._parse_tf_choice(text)
+                self._set_ui_state(context, "tb_touch_choice", draft)
+                await self._send(
+                    update,
+                    "Attivare Touch intrabar? ON: check trigger ogni 60s senza attendere chiusura candela.",
+                    reply_markup=self._yes_no_keyboard(),
+                )
+                return True
+            if state == "tb_touch_choice":
+                if normalized == "si":
+                    draft["touch"] = True
+                elif normalized == "no":
+                    draft["touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
                 self._set_ui_state(context, "tb_btc_liq_choice", draft)
                 await self._send(update, "Attivare protezione BTC drop per questo TRAILING BUY?", reply_markup=self._yes_no_keyboard())
                 return True
@@ -2845,6 +3056,8 @@ class TelegramTradingBot:
                     parts.append("acquistopulito")
                 if draft.get("btc_alert_liquidate"):
                     parts.append("btc_alert=1")
+                if draft.get("touch"):
+                    parts.append("touch")
                 if draft.get("post_fill_action"):
                     parts.append(self._post_fill_action_to_token(draft["post_fill_action"]))
                 await self._cmd_B(update, parts)
@@ -2991,11 +3204,27 @@ class TelegramTradingBot:
             if state == "oco_tf":
                 tf = self._parse_tf_choice(text)
                 draft["tf"] = tf
+                self._set_ui_state(context, "oco_touch_choice", draft)
+                await self._send(
+                    update,
+                    "Attivare Touch intrabar? ON: check trigger ogni 60s senza attendere chiusura candela.",
+                    reply_markup=self._yes_no_keyboard(),
+                )
+                return True
+            if state == "oco_touch_choice":
+                if normalized == "si":
+                    draft["touch"] = True
+                elif normalized == "no":
+                    draft["touch"] = False
+                else:
+                    await self._send(update, "Risposta non valida: scegli Si o No", reply_markup=self._yes_no_keyboard())
+                    return True
+                tf = draft.get("tf", self._default_tf_minutes)
                 self._set_ui_state(context, "oco_confirm", draft)
                 legs_text = []
                 for l in draft["legs"]:
                     legs_text.append(str(l))
-                await self._send(update, f"Riepilogo OCO: symbol={draft['symbol']} side={draft['side']} tf={tf}\nLegs:\n" + "\n".join(legs_text), reply_markup=self._confirm_keyboard())
+                await self._send(update, f"Riepilogo OCO: symbol={draft['symbol']} side={draft['side']} tf={tf} touch={bool(draft.get('touch'))}\nLegs:\n" + "\n".join(legs_text), reply_markup=self._confirm_keyboard())
                 return True
             if state == "oco_confirm":
                 if normalized != "conferma":
@@ -3014,10 +3243,11 @@ class TelegramTradingBot:
                     legs=legs,
                     hook_symbol=None,
                     tf_minutes=tf,
-                    next_eval_at=self._next_boundary_epoch(tf),
+                    next_eval_at=self._touch_next_eval_epoch() if bool(draft.get("touch", False)) else self._next_boundary_epoch(tf),
                     last_eval_at=None,
                     acquistopulito=bool(draft.get("acquistopulito", False)),
                     btc_alert_liquidate=bool(draft.get("btc_alert_liquidate", False)),
+                    touch=bool(draft.get("touch", False)),
                     status="active",
                 )
                 oco_spec = OcoSpec(
@@ -3028,8 +3258,10 @@ class TelegramTradingBot:
                     chat_id=chat_id,
                     parent_order_id=None,
                     tf_minutes=tf,
+                    next_eval_at=self._touch_next_eval_epoch() if bool(draft.get("touch", False)) else self._next_boundary_epoch(tf),
                     acquistopulito=bool(draft.get("acquistopulito", False)),
                     btc_alert_liquidate=bool(draft.get("btc_alert_liquidate", False)),
+                    touch=bool(draft.get("touch", False)),
                 )
                 # keep in-memory record for UI and lifecycle operations
                 if not hasattr(self, "_oco_orders"):
@@ -3489,6 +3721,7 @@ class TelegramTradingBot:
         parts, post_fill_action = self._extract_post_fill_action(parts)
         parts, acquistopulito = self._extract_acquistopulito(parts)
         parts, btc_alert_liquidate = self._extract_btc_alert_liquidate(parts)
+        parts, touch = self._extract_touch(parts)
         symbol, op, trigger_val, qty, hook = self._parse_simple_order(parts, market=market)
         ok, message = self._validate_spot_symbol(symbol)
         if not ok:
@@ -3503,7 +3736,10 @@ class TelegramTradingBot:
             raise ValueError("acquistopulito supportato solo su ordini buy")
         chat_id = update.effective_chat.id
         order_id = self._new_order_id()
-        next_eval_at = int(time.time()) if market else self._next_boundary_epoch(tf_minutes)
+        if market:
+            next_eval_at = int(time.time())
+        else:
+            next_eval_at = self._touch_next_eval_epoch() if touch else self._next_boundary_epoch(tf_minutes)
 
         spec = SimpleOrderSpec(
             order_id=order_id,
@@ -3519,6 +3755,7 @@ class TelegramTradingBot:
             post_fill_action=post_fill_action,
             acquistopulito=acquistopulito,
             btc_alert_liquidate=btc_alert_liquidate,
+            touch=touch,
         )
         if not market:
             self._attach_simple_to_engine(spec)
@@ -3539,6 +3776,7 @@ class TelegramTradingBot:
             post_fill_action=spec.post_fill_action,
             acquistopulito=spec.acquistopulito,
             btc_alert_liquidate=spec.btc_alert_liquidate,
+            touch=spec.touch,
             status=spec.status,
         )
         self._storage.append_event(
@@ -3551,6 +3789,7 @@ class TelegramTradingBot:
                 "market": market,
                 "acquistopulito": spec.acquistopulito,
                 "btc_alert_liquidate": spec.btc_alert_liquidate,
+                "touch": spec.touch,
             },
         )
 
@@ -3580,6 +3819,7 @@ class TelegramTradingBot:
         parts, post_fill_action = self._extract_post_fill_action(parts)
         parts, acquistopulito = self._extract_acquistopulito(parts)
         parts, btc_alert_liquidate = self._extract_btc_alert_liquidate(parts)
+        parts, touch = self._extract_touch(parts)
         if len(parts) < 6:
             raise ValueError("Formato: /f SYMBOL <|> TRIGGER QTY PERCENT [@PAIRHOOK]")
 
@@ -3601,23 +3841,25 @@ class TelegramTradingBot:
 
         chat_id = update.effective_chat.id
         order_id = self._new_order_id()
+        next_eval_at = self._touch_next_eval_epoch() if touch else self._next_boundary_epoch(tf_minutes)
         spec = FunctionSpec(
-            order_id,
-            symbol,
-            op,
-            trigger_val,
-            qty,
-            percent,
-            chat_id,
-            hook,
-            False,
-            None,
-            tf_minutes,
-            self._next_boundary_epoch(tf_minutes),
-            None,
-            post_fill_action,
-            acquistopulito,
-            btc_alert_liquidate,
+            order_id=order_id,
+            symbol=symbol,
+            op=op,
+            trigger=trigger_val,
+            qty=qty,
+            percent=percent,
+            chat_id=chat_id,
+            hook_symbol=hook,
+            bought=False,
+            prev_price=None,
+            tf_minutes=tf_minutes,
+            next_eval_at=next_eval_at,
+            last_eval_at=None,
+            post_fill_action=post_fill_action,
+            acquistopulito=acquistopulito,
+            btc_alert_liquidate=btc_alert_liquidate,
+            touch=touch,
         )
         self._function_orders.append(spec)
         self._poller.add_symbol(symbol)
@@ -3641,6 +3883,7 @@ class TelegramTradingBot:
             post_fill_action=spec.post_fill_action,
             acquistopulito=spec.acquistopulito,
             btc_alert_liquidate=spec.btc_alert_liquidate,
+            touch=spec.touch,
             status="active",
         )
         self._storage.append_event(
@@ -3651,6 +3894,7 @@ class TelegramTradingBot:
                 "tf": tf_minutes,
                 "acquistopulito": spec.acquistopulito,
                 "btc_alert_liquidate": spec.btc_alert_liquidate,
+                "touch": spec.touch,
             },
         )
         exec_symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
@@ -3659,6 +3903,7 @@ class TelegramTradingBot:
     async def _cmd_S(self, update: Update, parts: List[str]):
         parts, tf_minutes = self._extract_tf(parts)
         parts, btc_alert_liquidate = self._extract_btc_alert_liquidate(parts)
+        parts, touch = self._extract_touch(parts)
         if len(parts) < 4:
             raise ValueError("Formato: /S SYMBOL PERCENT QTY [LIMIT] [@PAIRHOOK]")
 
@@ -3682,6 +3927,7 @@ class TelegramTradingBot:
 
         chat_id = update.effective_chat.id
         order_id = self._new_order_id()
+        next_eval_at = self._touch_next_eval_epoch() if touch else self._next_boundary_epoch(tf_minutes)
         spec = TrailingSellSpec(
             order_id,
             symbol,
@@ -3694,9 +3940,10 @@ class TelegramTradingBot:
             None,
             None,
             tf_minutes,
-            self._next_boundary_epoch(tf_minutes),
+            next_eval_at,
             None,
             btc_alert_liquidate=btc_alert_liquidate,
+            touch=touch,
         )
         self._init_trailing_sell(spec)
         self._trailing_sell_orders.append(spec)
@@ -3721,12 +3968,13 @@ class TelegramTradingBot:
             next_eval_at=spec.next_eval_at,
             last_eval_at=spec.last_eval_at,
             btc_alert_liquidate=spec.btc_alert_liquidate,
+            touch=spec.touch,
             status=spec.status,
         )
         self._storage.append_event(
             "trailing_sell_created",
             order_id,
-            {"symbol": symbol, "tf": tf_minutes, "btc_alert_liquidate": spec.btc_alert_liquidate},
+            {"symbol": symbol, "tf": tf_minutes, "btc_alert_liquidate": spec.btc_alert_liquidate, "touch": spec.touch},
         )
         exec_symbol = self._exec_symbol(spec.symbol, spec.hook_symbol)
         await self._send(update, f"Trailing sell inserito: order_id={order_id} watch={spec.symbol} exec={exec_symbol}")
@@ -3736,6 +3984,7 @@ class TelegramTradingBot:
         parts, post_fill_action = self._extract_post_fill_action(parts)
         parts, acquistopulito = self._extract_acquistopulito(parts)
         parts, btc_alert_liquidate = self._extract_btc_alert_liquidate(parts)
+        parts, touch = self._extract_touch(parts)
         if len(parts) < 4:
             raise ValueError("Formato: /B SYMBOL PERCENT QTY [LIMIT] [@PAIRHOOK]")
 
@@ -3755,6 +4004,7 @@ class TelegramTradingBot:
 
         chat_id = update.effective_chat.id
         order_id = self._new_order_id()
+        next_eval_at = self._touch_next_eval_epoch() if touch else self._next_boundary_epoch(tf_minutes)
         spec = TrailingBuySpec(
             order_id,
             symbol,
@@ -3766,11 +4016,12 @@ class TelegramTradingBot:
             None,
             None,
             tf_minutes,
-            self._next_boundary_epoch(tf_minutes),
+            next_eval_at,
             None,
             post_fill_action,
             acquistopulito,
             btc_alert_liquidate,
+            touch=touch,
         )
         self._init_trailing_buy(spec)
         self._trailing_buy_orders.append(spec)
@@ -3797,6 +4048,7 @@ class TelegramTradingBot:
             post_fill_action=spec.post_fill_action,
             acquistopulito=spec.acquistopulito,
             btc_alert_liquidate=spec.btc_alert_liquidate,
+            touch=spec.touch,
             status=spec.status,
         )
         self._storage.append_event(
@@ -3809,6 +4061,7 @@ class TelegramTradingBot:
                 "hook_symbol": hook,
                 "acquistopulito": spec.acquistopulito,
                 "btc_alert_liquidate": spec.btc_alert_liquidate,
+                "touch": spec.touch,
             },
         )
         await self._send(update, f"Trailing buy inserito: order_id={order_id}")
@@ -4118,7 +4371,31 @@ class TelegramTradingBot:
                 return str(spec.get("type"))
             tp = spec.get("tp") or {}
             sl = spec.get("sl") or {}
-            return f"oco(tp={tp.get('mode')}:{tp.get('value')},sl={sl.get('mode')}:{sl.get('value')})"
+            base = f"oco(tp={tp.get('mode')}:{tp.get('value')},sl={sl.get('mode')}:{sl.get('value')})"
+
+            tp_touch = spec.get("tp_touch")
+            if tp_touch is None and isinstance(tp, dict):
+                tp_touch = tp.get("touch")
+            sl_touch = spec.get("sl_touch")
+            if sl_touch is None and isinstance(sl, dict):
+                sl_touch = sl.get("touch")
+
+            extra_parts: List[str] = []
+            if tp_touch is not None:
+                try:
+                    tp_touch_bool = self._parse_bool_like(tp_touch)
+                except Exception:
+                    tp_touch_bool = bool(tp_touch)
+                extra_parts.append(f"tp_touch={'true' if tp_touch_bool else 'false'}")
+            if sl_touch is not None:
+                try:
+                    sl_touch_bool = self._parse_bool_like(sl_touch)
+                except Exception:
+                    sl_touch_bool = bool(sl_touch)
+                extra_parts.append(f"sl_touch={'true' if sl_touch_bool else 'false'}")
+            if not extra_parts:
+                return base
+            return base[:-1] + "," + ",".join(extra_parts) + ")"
 
         def _human_time(ts: Optional[int]) -> str:
             if ts is None:
@@ -4174,6 +4451,7 @@ class TelegramTradingBot:
                         parts.append(f"stop={l.get('stop_price')}")
                     if l.get('trail_percent') is not None:
                         parts.append(f"trail={l.get('trail_percent')}%")
+                    parts.append(f"touch={self._resolve_oco_leg_touch(o.touch, l)}")
                     parts.append(f"qty={l.get('qty')}")
                     if l.get('core_order_id') is not None:
                         parts.append(f"core={l.get('core_order_id')}")
@@ -4200,7 +4478,31 @@ class TelegramTradingBot:
                 return str(spec.get("type"))
             tp = spec.get("tp") or {}
             sl = spec.get("sl") or {}
-            return f"oco(tp={tp.get('mode')}:{tp.get('value')},sl={sl.get('mode')}:{sl.get('value')})"
+            base = f"oco(tp={tp.get('mode')}:{tp.get('value')},sl={sl.get('mode')}:{sl.get('value')})"
+
+            tp_touch = spec.get("tp_touch")
+            if tp_touch is None and isinstance(tp, dict):
+                tp_touch = tp.get("touch")
+            sl_touch = spec.get("sl_touch")
+            if sl_touch is None and isinstance(sl, dict):
+                sl_touch = sl.get("touch")
+
+            extra_parts: List[str] = []
+            if tp_touch is not None:
+                try:
+                    tp_touch_bool = self._parse_bool_like(tp_touch)
+                except Exception:
+                    tp_touch_bool = bool(tp_touch)
+                extra_parts.append(f"tp_touch={'true' if tp_touch_bool else 'false'}")
+            if sl_touch is not None:
+                try:
+                    sl_touch_bool = self._parse_bool_like(sl_touch)
+                except Exception:
+                    sl_touch_bool = bool(sl_touch)
+                extra_parts.append(f"sl_touch={'true' if sl_touch_bool else 'false'}")
+            if not extra_parts:
+                return base
+            return base[:-1] + "," + ",".join(extra_parts) + ")"
 
         def _human_time(ts: Optional[Any]) -> str:
             if ts is None:
@@ -4274,6 +4576,7 @@ class TelegramTradingBot:
                             leg_parts.append(f"stop={leg.get('stop_price')}")
                         if leg.get("trail_percent") is not None:
                             leg_parts.append(f"trail={leg.get('trail_percent')}%")
+                        leg_parts.append(f"touch={self._resolve_oco_leg_touch(bool(row.get('touch', 0)), leg)}")
                         leg_parts.append(f"qty={leg.get('qty')}")
                         if leg.get("core_order_id") is not None:
                             leg_parts.append(f"core={leg.get('core_order_id')}")
@@ -4351,7 +4654,8 @@ class TelegramTradingBot:
         raise ValueError("order_id non trovato")
 
     def _init_trailing_sell(self, spec: TrailingSellSpec):
-        price = self._feed.get_price(spec.symbol, spec.tf_minutes)
+        eval_tf = self._price_tf_for_eval(spec.tf_minutes, spec.touch)
+        price = self._feed.get_price(spec.symbol, eval_tf)
         spec.max_price = price
         if spec.limit is None:
             spec.armed = True
@@ -4360,7 +4664,8 @@ class TelegramTradingBot:
             spec.arm_op = "<" if price >= spec.limit else ">"
 
     def _init_trailing_buy(self, spec: TrailingBuySpec):
-        price = self._feed.get_price(spec.symbol, spec.tf_minutes)
+        eval_tf = self._price_tf_for_eval(spec.tf_minutes, spec.touch)
+        price = self._feed.get_price(spec.symbol, eval_tf)
         spec.min_price = price
         if spec.limit is None:
             spec.armed = True
@@ -4370,13 +4675,24 @@ class TelegramTradingBot:
 
     @staticmethod
     def _is_due(spec, now_ts: int) -> bool:
+        if bool(getattr(spec, "touch", False)):
+            next_eval = getattr(spec, "next_eval_at", None)
+            if next_eval is not None:
+                return now_ts >= int(next_eval)
+            last_eval = getattr(spec, "last_eval_at", None)
+            if last_eval is None:
+                return True
+            return now_ts >= int(last_eval) + 60
         if getattr(spec, "next_eval_at", None) is None:
             return False
         return now_ts >= int(spec.next_eval_at)
 
     def _mark_evaluated(self, spec, now_ts: int):
         spec.last_eval_at = now_ts
-        spec.next_eval_at = self._next_boundary_epoch(spec.tf_minutes, now_ts)
+        if bool(getattr(spec, "touch", False)):
+            spec.next_eval_at = self._touch_next_eval_epoch(now_ts)
+        else:
+            spec.next_eval_at = self._next_boundary_epoch(spec.tf_minutes, now_ts)
         self._storage.update_order_schedule(spec.order_id, spec.next_eval_at, spec.last_eval_at)
 
     def _eval_function_orders(self, now_ts: int):
@@ -4386,7 +4702,8 @@ class TelegramTradingBot:
             if not self._is_due(spec, now_ts):
                 continue
 
-            price = self._feed.get_price(spec.symbol, spec.tf_minutes)
+            eval_tf = self._price_tf_for_eval(spec.tf_minutes, spec.touch)
+            price = self._feed.get_price(spec.symbol, eval_tf)
             self._mark_evaluated(spec, now_ts)
             if spec.prev_price is None:
                 spec.prev_price = price
@@ -4448,6 +4765,7 @@ class TelegramTradingBot:
                             tf_minutes=spec.tf_minutes,
                             fill_price=price,
                             post_fill_action=spec.post_fill_action,
+                            touch=spec.touch,
                         )
                     else:
                         trailing_order_id = self._new_order_id()
@@ -4460,7 +4778,8 @@ class TelegramTradingBot:
                             limit=None,
                             hook_symbol=spec.hook_symbol,
                             tf_minutes=spec.tf_minutes,
-                            next_eval_at=self._next_boundary_epoch(spec.tf_minutes),
+                            next_eval_at=self._touch_next_eval_epoch() if spec.touch else self._next_boundary_epoch(spec.tf_minutes),
+                            touch=spec.touch,
                         )
                         self._init_trailing_sell(sell_spec)
                         self._trailing_sell_orders.append(sell_spec)
@@ -4481,6 +4800,7 @@ class TelegramTradingBot:
                             next_eval_at=sell_spec.next_eval_at,
                             last_eval_at=sell_spec.last_eval_at,
                             post_fill_action=None,
+                            touch=sell_spec.touch,
                             status=sell_spec.status,
                         )
                         self._storage.append_event("trailing_sell_created_from_function", sell_spec.order_id)
@@ -4505,7 +4825,8 @@ class TelegramTradingBot:
                 continue
             if not self._is_due(spec, now_ts):
                 continue
-            price = self._feed.get_price(spec.symbol, spec.tf_minutes)
+            eval_tf = self._price_tf_for_eval(spec.tf_minutes, spec.touch)
+            price = self._feed.get_price(spec.symbol, eval_tf)
             self._mark_evaluated(spec, now_ts)
             if not spec.armed and spec.limit is not None:
                 if (spec.arm_op == "<" and price < spec.limit) or (spec.arm_op == ">" and price > spec.limit):
@@ -4612,7 +4933,8 @@ class TelegramTradingBot:
                 continue
             if not self._is_due(spec, now_ts):
                 continue
-            price = self._feed.get_price(spec.symbol, spec.tf_minutes)
+            eval_tf = self._price_tf_for_eval(spec.tf_minutes, spec.touch)
+            price = self._feed.get_price(spec.symbol, eval_tf)
             self._mark_evaluated(spec, now_ts)
 
             if not spec.armed:
@@ -4671,6 +4993,7 @@ class TelegramTradingBot:
                             tf_minutes=spec.tf_minutes,
                             fill_price=price,
                             post_fill_action=spec.post_fill_action,
+                            touch=spec.touch,
                         )
                     except Exception as exc:
                         spec.status = "error"

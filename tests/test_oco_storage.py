@@ -154,6 +154,42 @@ def test_oco_trailing_leg_persistence(tmp_path):
     storage.close()
 
 
+def test_oco_leg_touch_persistence(tmp_path):
+    db_path = str(tmp_path / "test_bot.sqlite3")
+    archive_dir = str(tmp_path / "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    storage = SQLiteStorage(db_path, archive_dir)
+    order_id = storage.next_order_id()
+    legs = [
+        {"leg_index": 1, "ordertype": "limit", "price": 71000.0, "qty": 0.01, "side": "sell", "touch": True},
+        {"leg_index": 2, "ordertype": "stop_limit", "stop_price": 69000.0, "limit_price": 68950.0, "qty": 0.01, "side": "sell", "touch": False},
+    ]
+
+    storage.save_oco_order(
+        order_id=order_id,
+        chat_id=321,
+        symbol="BTCUSDT",
+        side="sell",
+        legs=legs,
+        hook_symbol=None,
+        tf_minutes=15,
+        next_eval_at=None,
+        last_eval_at=None,
+        touch=False,
+        status="active",
+    )
+
+    active = storage.load_active_orders()
+    row = next(r for r in active["oco"] if r["order_id"] == order_id)
+    leg1 = next(l for l in row["legs"] if int(l["leg_index"]) == 1)
+    leg2 = next(l for l in row["legs"] if int(l["leg_index"]) == 2)
+    assert int(leg1["touch"]) == 1
+    assert int(leg2["touch"]) == 0
+
+    storage.close()
+
+
 def test_btc_alert_liquidate_flag_persistence(tmp_path):
     db_path = str(tmp_path / "test_bot.sqlite3")
     archive_dir = str(tmp_path / "archive")

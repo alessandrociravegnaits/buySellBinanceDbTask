@@ -50,6 +50,30 @@ def test_extract_btc_alert_liquidate_aliases():
     assert all("btc_liquidate" not in token for token in parts)
 
 
+def test_extract_touch_aliases():
+    parts, value = TelegramTradingBot._extract_touch([
+        "/b",
+        "BTCUSDT",
+        ">",
+        "70000",
+        "0.01",
+        "touch",
+    ])
+    assert value is True
+    assert "touch" not in parts
+
+    parts, value = TelegramTradingBot._extract_touch([
+        "/s",
+        "BTCUSDT",
+        "<",
+        "60000",
+        "0.01",
+        "touch=false",
+    ])
+    assert value is False
+    assert all("touch" not in token for token in parts)
+
+
 def test_extract_btc_alert_liquidate_duplicate_raises():
     try:
         TelegramTradingBot._extract_btc_alert_liquidate([
@@ -87,7 +111,12 @@ def test_simple_sell_wizard_adds_btc_flag_choice(tmp_path):
     }
 
     asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "15"))
+    assert context.user_data["ui_state"] == "simple_touch_choice"
+    assert "touch intrabar" in captured["text"].lower()
+
+    asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "Si"))
     assert context.user_data["ui_state"] == "simple_btc_liq_choice"
+    assert context.user_data["ui_draft"]["touch"] is True
     assert "protezione BTC drop" in captured["text"]
 
     asyncio.run(bot._handle_guided_flow(_DummyUpdate(), context, "Si"))
