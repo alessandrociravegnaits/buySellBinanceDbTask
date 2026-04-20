@@ -11,6 +11,7 @@ Consentire ad alcuni ordini di ingresso (`/b`, `/f`, `/B`) di innescare automati
 - `order_trailing.post_fill_action` (`TEXT`, JSON)
 - `order_oco.parent_order_id` (`INTEGER`, riferimento logico ordine padre)
 - `order_oco_leg.trail_percent` (`REAL`, usato per leg trailing)
+- `orders.touch` e `order_oco_leg.touch` (`INTEGER`, supporto touch intrabar)
 - `order_trailing.oco_parent_order_id` / `order_trailing.oco_leg_index` (`INTEGER`, linkage runtime OCO<->Trailing)
 
 ### Flusso Runtime
@@ -21,11 +22,13 @@ Consentire ad alcuni ordini di ingresso (`/b`, `/f`, `/B`) di innescare automati
   - `stop_limit` da `fixed` o `%`, oppure
   - `trailing` con riuso motore trailing esistente (`sl=trail:x%`).
 5. Al fire di una leg OCO, il sibling viene cancellato (cancel-sibling) anche se il sibling e un trailing linked.
+6. Se `tp_touch` o `sl_touch` sono attivi, la leg usa scheduling intrabar a 60s; altrimenti resta sul boundary del TF.
 
 ### Osservabilita
 - Eventi principali: `post_fill_action_triggered`, `post_fill_action_failed`, `auto_oco_created`, `oco_leg_filled`, `oco_leg_cancelled`, `oco_trailing_leg_fired`.
 - `/o` mostra post-fill action e linkage parent/legs.
 - `/info` mostra conteggio trailing linked a OCO attivi.
+- Il wizard guidato chiede `tp_touch` e `sl_touch` separatamente per auto-OCO e chiede `touch` separato per leg 1 e leg 2 nell'OCO standalone.
 
 ### UX
 La configurazione Auto OCO e disponibile anche via wizard guidato, senza obbligo di scrivere il token `oco:` manualmente.
@@ -281,6 +284,7 @@ Vantaggi e rischi mitigati:
 - `Info` UI: il bottone del menu principale è stato rinominato in `Info` (prima era `Help`) e ora la vista mostra due sezioni: una guida sintetica ai comandi e una sezione "Valori correnti" che riporta i runtime settings attuali del bot (default TF, timeframe seconds, echo, alert, alert percent/reference price e conteggio ordini attivi per tipo inclusi OCO). Questo permette di vedere le impostazioni reali in uso senza aprire il codice.
 
 - OCO (One-Cancels-the-Other): implementate le tabelle `order_oco` e `order_oco_leg` in storage; aggiunti i metodi `save_oco_order`, `update_oco_leg_core_order_id`, `update_oco_leg_status`. L'app crea core orders per ciascuna leg (mappati in `order_oco_leg.core_order_id`) e sul fill di una leg esegue il comportamento cancel-sibling (marca leg come `filled`, marca OCO come `filled` e cancella le leg rimanenti nel motore). Eventi `oco_leg_filled` e `oco_leg_cancelled` vengono scritti in `event_log`.
+- Touch intrabar: il runtime usa `touch` per portare la valutazione a cadenza 60s; il parent OCO salva `touch=true` se almeno una leg lo richiede, per mantenere scheduling coerente con la UI.
 
 - Migrazione/creazione schema: `SQLiteStorage.__init__` esegue `_init_schema` e `CREATE TABLE IF NOT EXISTS` per tutte le tabelle; le nuove tabelle OCO verranno create automaticamente al prossimo avvio dell'app se mancanti. Non è necessario cancellare manualmente il DB per applicare queste modifiche.
 

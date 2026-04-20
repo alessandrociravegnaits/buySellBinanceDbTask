@@ -203,6 +203,8 @@ Puoi configurarlo in 2 modi:
 1. Tramite wizard guidato UI (senza scrivere token `oco:` a mano).
 2. Tramite comando con token opzionale `oco:`.
 
+Nel wizard guidato il touch intrabar e separato per TP e SL, quindi puoi fare TP touch e SL classico, oppure altre combinazioni compatibili.
+
 Esempi comando:
 
 ```text
@@ -217,7 +219,11 @@ Formato supportato:
 - `sl`: `%`, valore fisso, oppure `trail:x%`
 - opzionale per-leg: `tp_touch=true|false`, `sl_touch=true|false` (override del touch globale ordine)
 
+Il token `oco:` viene serializzato anche dalla UI e resta compatibile con i vecchi token senza touch esplicito.
+
 Le due gambe sono indipendenti: puoi scegliere liberamente il mode per ciascuna leg.
+
+Se l'OCO viene creato dal wizard standalone, il touch viene richiesto separatamente per leg 1 e leg 2 e il riepilogo mostra entrambe le scelte prima della conferma.
 
 ## BTC Drop Protection
 
@@ -245,6 +251,7 @@ Come impostare il flag ordine:
 
 - Slash command: aggiungi `btc_alert=1` (equivalenti: `btc_alert`, `btc_liquidate`) ai comandi ordine.
 - Wizard UI: durante la creazione ordine viene chiesto se abilitare la protezione BTC drop per l'ordine corrente.
+- Wizard UI OCO: il touch intrabar e richiesto separatamente per ciascuna leg; se la spec non lo definisce, il runtime usa il default compatibile.
 
 Esempi:
 
@@ -265,6 +272,8 @@ Comportamento:
 Visibilita runtime:
 - `/o` mostra `post_fill_action`, `parent` OCO, dettagli leg trailing/core linkage.
 - `/info` mostra il conteggio di trailing sell linked a OCO attivi.
+
+La visualizzazione storico/OCO conserva il formato legacy `oco(tp=...,sl=...)` e aggiunge i campi touch solo quando presenti, per non rompere la lettura umana o i test.
 
 Nota: il comando `/info` ora mostra anche i valori correnti del bot (default TF, echo, alert, reference price e conteggi ordini attivi). Il comando `/c a` cancella tutti gli ordini attivi presenti nelle collezioni in memoria, inclusi gli OCO.
 

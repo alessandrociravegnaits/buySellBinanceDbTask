@@ -15,10 +15,17 @@ Modalita supportate:
 - `percent`
 - `trailing`
 
+## Touch intrabar
+- Supporto `orders.touch` e `order_oco_leg.touch`.
+- Auto-OCO: `tp_touch` e `sl_touch` sono indipendenti.
+- OCO wizard: `leg 1` e `leg 2` hanno touch separato.
+- Se almeno una leg usa touch, l'OCO parent schedula a 60s.
+
 ## Logica OCO
 - Per ogni leg viene creato un ordine core associato (`core_order_id`).
 - Al fill di una leg: ordine OCO viene finalizzato e sibling cancellato (cancel-sibling).
 - Le leg trailing possono essere collegate a ordini trailing runtime.
+- Fallback compatibile: se una leg non specifica touch, eredita il default del parent/spec.
 
 ## Archiviazione
 Routine mensile sposta ordini chiusi in `data/archive`.

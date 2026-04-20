@@ -5,10 +5,10 @@ Questa cartella contiene riassunti di sessione e note operative in formato Markd
 ## 🚀 QUICK START
 
 **Inizia da qui:**  
-👉 [session-summary-2026-04-17.md](session-summary-2026-04-17.md) - ultima sessione consolidata
+👉 [session-summary-2026-04-20.md](session-summary-2026-04-20.md) - ultima sessione consolidata
 
-**Ultima sessione (2026-04-17):**  
-📄 [session-summary-2026-04-17.md](session-summary-2026-04-17.md) - ✅ SR Book Rules Implementate + DB Fix
+**Ultima sessione (2026-04-20):**  
+📄 [session-summary-2026-04-20.md](session-summary-2026-04-20.md) - ✅ Touch per-leg OCO + UI/DB alignment
 
 ---
 
@@ -41,6 +41,7 @@ Questa cartella contiene riassunti di sessione e note operative in formato Markd
 - `session-summary-2026-04-17.md` ⭐: Session recap
 
 ### 📝 Session Summaries
+- `session-summary-2026-04-20.md`: ✅ Touch per-leg OCO + UI/DB alignment
 - `session-summary-2026-04-17.md`: ✅ SR + DB Fix (LATEST)
 - `session-summary-2026-04-16.md`: Previous session
 - `session-summary-2026-04-14.md`: Previous session
@@ -48,9 +49,12 @@ Questa cartella contiene riassunti di sessione e note operative in formato Markd
 
 ---
 
-## ✨ Latest Updates (2026-04-17)
+## ✨ Latest Updates (2026-04-20)
 
 ### ✅ Implementate
+- Per-leg OCO touch support (`tp_touch`, `sl_touch`, leg 1 / leg 2 touch)
+- Wizard UI allineata con i nuovi step touch
+- Runtime OCO schedulato a 60s quando serve touch intrabar
 - Close confirmation breakout validation (8% weight)
 - Role reversal detection (6% weight)
 - Round number proximity scoring (4% weight)
@@ -58,8 +62,8 @@ Questa cartella contiene riassunti di sessione e note operative in formato Markd
 - Database path fix (orders now persist correctly)
 
 ### 📊 Test Results
-- 9/9 tests passing
-- 4 new tests added for book rules
+- 95/95 tests passing
+- New tests added for OCO touch wizard and auto-OCO touch semantics
 - No regressions
 
 ### 📚 Documentation

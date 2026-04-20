@@ -43,6 +43,7 @@ BOT_DB_PATH=data/bot.sqlite3
 4) Creazione / migrazione DB
 - Il DB viene creato automaticamente se mancante (`SQLiteStorage` esegue `CREATE TABLE IF NOT EXISTS`).
 - Per ripristinare un DB esistente, copia `data/bot.sqlite3` nella cartella `data/`.
+- Le migrazioni recenti sono additive: aggiungono `orders.touch` e `order_oco_leg.touch` senza rompere i record esistenti.
 
 5) File importanti da conservare
 - `data/bot.sqlite3` (stato ordini e mapping OCO)
@@ -84,6 +85,7 @@ python telegram_bot.py
 - Docs handoff: `docs/HANDOFF.md` (questo file)
 - Stato corrente e runbook PASS1: `docs/ai/AI_HANDOFF_CURRENT.md` e `docs/ai/AI_MIGRATION_PASS1_RUNBOOK.md`
 - Registro IA (modifiche fatte dall'assistente): `/memories/ia_rules.md`
+- Per il nuovo comportamento TP/SL touch controlla anche `README.md`, `ARCHITECTURE.md` e `progettoOCO.md`.
 
 11) Check list rapida
 - [ ] repo clonato e branch corretto
@@ -92,6 +94,7 @@ python telegram_bot.py
 - [ ] `data/bot.sqlite3` copiato (se vuoi ripristinare stato)
 - [ ] `python -m pytest` verde
 - [ ] bot avviato e `/start` risponde
+- [ ] wizard OCO verificato con `tp_touch` / `sl_touch` o touch separato per leg
 
 Note operative
 - Le chiavi Binance sono sensibili: usa secret manager per produzione.

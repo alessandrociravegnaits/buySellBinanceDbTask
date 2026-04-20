@@ -132,6 +132,16 @@ La funzione ritorna un dizionario JSON-like con questi campi:
 - `secure_resistance_ok`
 - `confidence`
 
+## Aggiornamento operativo recente
+
+Il bot ora supporta OCO con touch intrabar a livello di leg:
+
+- Auto-OCO post-fill: `tp_touch` e `sl_touch` indipendenti.
+- OCO wizard: `leg 1 touch` e `leg 2 touch` separati.
+- Runtime: se almeno una leg usa touch, la schedulazione passa a 60s.
+
+Quando aggiorni la documentazione o l'onboarding, tieni allineati anche `README.md` e `ARCHITECTURE.md` con questa semantica.
+
 ### Regola pratica
 
 - se `secure_support_ok == True`, il supporto e valido per il bot

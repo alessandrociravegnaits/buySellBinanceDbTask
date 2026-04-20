@@ -22,3 +22,9 @@
 
 - 2026-04-14: Corretto update di `next_eval_at` per trailing sell e verificata la coerenza dei flussi simple buy/sell.
 	- Evidenza: `PYTHONPATH=. pytest -q` => `58 passed, 4 warnings`.
+
+- 2026-04-20: Esteso OCO con touch per-leg.
+	- Auto-OCO usa `tp_touch` e `sl_touch` indipendenti.
+	- OCO wizard chiede `touch` separato per leg 1 e leg 2.
+	- Se almeno una leg usa touch, il parent OCO schedula a 60s.
+	- Evidenza: `PYTHONPATH=. pytest -q` => `95 passed, 6 warnings`.

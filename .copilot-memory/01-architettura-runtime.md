@@ -16,6 +16,11 @@ Trading rules engine controllato via Telegram, con persistenza SQLite, feed prez
 4. In caso di trigger, esecuzione su exchange + eventi + notifiche.
 5. Se presente post-fill action, viene creato OCO figlio.
 
+## Touch intrabar recente
+- TP e SL nel post-fill possono avere touch separato.
+- L'OCO standalone chiede touch per ogni leg.
+- Se almeno una leg usa touch, il parent OCO usa scheduling a 60s invece del boundary TF.
+
 ## Timeframe
 Valori ammessi: 1, 5, 15, 30, 60, 120, 240, 1440 minuti.
 Allineamento boundary UTC.
@@ -24,5 +29,6 @@ Allineamento boundary UTC.
 - Rate limit/transient error Binance.
 - Necessità di mantenere valutazione ordini sequenziale.
 - Coerenza prezzo candle chiusa nel feed.
+- Coerenza tra UI guidata, storage leg-touch e runtime scheduling.
 
 Fonti: `ARCHITECTURE.md`, `README.md`, `docs/HANDOFF.md`

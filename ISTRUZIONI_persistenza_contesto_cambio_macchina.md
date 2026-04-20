@@ -62,8 +62,10 @@ Punti di contesto e file utili per ripresa sviluppo:
 - `storage.py` — logica di persistenza SQLite, ricerca delle funzioni `save_oco_order`, `update_oco_leg_core_order_id`, `update_oco_leg_status`.
 - `core.py` — dove il motore crea e gestisce `core_order_id` e come mappare questi id alle righe `order_oco_leg`.
 - `tests/` — i test esistenti che coprono integrazione OCO e persistenza.
+- `README.md`, `ARCHITECTURE.md`, `progettoOCO.md` — semantica aggiornata per `tp_touch`, `sl_touch` e wizard OCO per-leg.
 
 Nota sui DB/migrazioni:
 - Lo schema usa `CREATE TABLE IF NOT EXISTS`, quindi al primo avvio eventuali nuove tabelle vengono create automaticamente. Tuttavia, per operazioni di migrazione più complesse (es. cambi di tipo di colonna) consigliamo di eseguire un dump SQL e applicare alterazioni in modo controllato.
+- Le ultime migrazioni sono additive: aggiungono `orders.touch` e `order_oco_leg.touch` e non richiedono reset del DB.
 
 Se vuoi che generi automaticamente un file `docs/HANDOFF.md` con comandi pronti `git` + `ps` per esportare/importare il DB e un playbook passo-passo, posso crearlo subito.

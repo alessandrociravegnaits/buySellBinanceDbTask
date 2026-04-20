@@ -34,6 +34,8 @@ json
 
 In questo modo il parser della post-fill action sa sempre cosa costruire leggendo \`type\` prima di tutto, e le due leg TP/SL sono indipendenti nella loro modalità.
 
+Nella versione attuale il modello si e' esteso anche al touch: TP e SL possono avere \`tp_touch\` / \`sl_touch\` indipendenti, mantenendo compatibilita' con la vecchia semantica globale.
+
 \---
 
 \#\# 2. Come si specifica dal comando Telegram
@@ -46,6 +48,8 @@ Aggiungi una sintassi opzionale in coda al comando di buy esistente. L'utente ch
 \`\`\`
 
 Il parser in \`telegram\_bot.py\` legge questo token, costruisce il dict della post-fill action e lo serializza come JSON nella colonna. Se il token non c'è, la colonna resta NULL e non succede nulla dopo il fill.
+
+La UI guidata genera gli stessi token, quindi comando e wizard restano allineati.
 
 \---
 
@@ -91,6 +95,8 @@ Nella tabella \`order\_oco\` aggiungi una colonna \`parent\_order\_id\` che punt
 \- nel \`/c a\` cancellare anche gli OCO figli se cancelli il padre (anche se il padre è già filled, è utile per audit)  
 \- nell'archivio mensile mantenere la catena di causalità
 
+La UI standalone ora mostra leg 1 e leg 2 separatamente, cosi' il riepilogo rispecchia il dato salvato in \`order_oco_leg.touch\`.
+
 \---
 
 \#\# 6. Cosa cambia nelle tabelle
@@ -103,6 +109,8 @@ Nella tabella \`order\_oco\` aggiungi una colonna \`parent\_order\_id\` che punt
 | \`order\_oco\` | \+ colonna \`parent\_order\_id INTEGER\` |
 
 Nient'altro nel DB. La logica di calcolo TP/SL/trailing vive tutta in Python.
+
+In piu' il runtime usa \`orders.touch\` e \`order_oco_leg.touch\` per schedulare a 60s quando serve touch intrabar.
 
 \---
 
